@@ -1,0 +1,6 @@
+.venv
+.envrc
+.local_env
+storage/
+__pycache__
+.git

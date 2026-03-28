@@ -1,0 +1,24 @@
+[project]
+name = "endoscope"
+version = "0.1.0"
+description = "Lightweight debug artifact capture system"
+readme = "README.md"
+requires-python = ">=3.12"
+dependencies = [
+    "aioboto3>=15.5.0",
+    "pydantic>=2.12.5",
+    "pytest>=9.0.2",
+    "ruff>=0.15.8",
+    "starlette>=1.0.0",
+    "structlog>=25.5.0",
+    "ty>=0.0.26",
+    "typer>=0.24.1",
+    "uvicorn>=0.42.0",
+]
+
+[project.scripts]
+endoscope = "endoscope.cli:run"
+
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
