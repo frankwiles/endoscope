@@ -1,23 +1,4 @@
 services:
-  api:
-    build: .
-    ports:
-      - "8000:8000"
-    environment:
-      ENDO_S3_ENDPOINT: http://rustfs:9000
-      ENDO_S3_ACCESS_KEY: rustfsadmin
-      ENDO_S3_SECRET_KEY: rustfsadmin
-      ENDO_S3_BUCKET: endoscope
-      ENDO_API_KEY: local-dev-api-key
-      ENDO_RELOAD: true
-      ENDO_PRETTY_JSON_LOGS: true
-    volumes:
-      - ./endoscope:/app/endoscope
-    depends_on:
-      rustfs:
-        condition: service_healthy
-    restart: unless-stopped
-
   rustfs:
     image: rustfs/rustfs:latest
     ports:
@@ -38,6 +19,24 @@ services:
       interval: 5s
       timeout: 3s
       retries: 10
+
+  api:
+    build: .
+    ports:
+      - "8000:8000"
+    environment:
+      ENDO_S3_ENDPOINT: http://rustfs:9000
+      ENDO_S3_ACCESS_KEY: rustfsadmin
+      ENDO_S3_SECRET_KEY: rustfsadmin
+      ENDO_S3_BUCKET: endoscope
+      ENDO_API_KEY: local-dev-api-key
+      ENDO_PRETTY_JSON_LOGS: true
+    volumes:
+      - ./endoscope:/app/endoscope
+    depends_on:
+      rustfs:
+        condition: service_healthy
+    restart: unless-stopped
 
   init-bucket:
     image: amazon/aws-cli:latest

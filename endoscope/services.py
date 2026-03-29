@@ -1,12 +1,13 @@
 from __future__ import annotations
 
-import environs
 from datetime import UTC, datetime
 from uuid import UUID, uuid4
 
 import structlog
 from endoscope.storage import S3Storage
 from pydantic import BaseModel, Field
+
+from .config import EndoscopeConfig
 
 log = structlog.get_logger()
 
@@ -119,18 +120,17 @@ class SessionService:
 
 
 # ---------------------------------------------------------------------------
-# Factory — wires up storage from env vars
+# Factory — wires up storage from config
 # ---------------------------------------------------------------------------
 
 
-def make_session_service() -> SessionService:
-    """Build a SessionService from the current environment."""
-    env = environs.Env()
+def make_session_service(cfg: EndoscopeConfig) -> SessionService:
+    """Build a SessionService from a configuration object."""
     storage = S3Storage(
-        endpoint_url=env.str("ENDO_S3_ENDPOINT"),
-        access_key=env.str("ENDO_S3_ACCESS_KEY"),
-        secret_key=env.str("ENDO_S3_SECRET_KEY"),
-        bucket=env.str("ENDO_S3_BUCKET"),
-        region=env.str("ENDO_S3_REGION", "us-east-1"),
+        endpoint_url=cfg.s3_endpoint,
+        access_key=cfg.s3_access_key,
+        secret_key=cfg.s3_secret_key,
+        bucket=cfg.s3_bucket,
+        region=cfg.s3_region,
     )
     return SessionService(storage=storage)

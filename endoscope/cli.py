@@ -1,7 +1,8 @@
-import os
-
 import typer
 import uvicorn
+
+from .app import create_app
+from .config import EndoscopeConfig
 
 app = typer.Typer(
     name="endoscope",
@@ -17,27 +18,36 @@ def main():
 
 @app.command("serve")
 def serve_cmd(
-    project: str | None = typer.Option(
+    api_key: str = typer.Option(
+        None,
+        "--api-key",
+        "-k",
+        envvar="ENDO_API_KEY",
+        help="API key for authentication",
+    ),
+    project: str = typer.Option(
         None, "--project", "-p", envvar="ENDO_PROJECT", help="Project name"
     ),
-    api_key: str | None = typer.Option(
-        None, "--api-key", "-k", envvar="ENDO_API_KEY", help="API key for authentication"
-    ),
-    s3_endpoint: str | None = typer.Option(
-        None, "--s3-endpoint", envvar="ENDO_S3_ENDPOINT",
+    s3_endpoint: str = typer.Option(
+        "https://s3.us-east-1.amazonaws.com",
+        "--s3-endpoint",
+        envvar="ENDO_S3_ENDPOINT",
         help="S3-compatible endpoint URL (e.g. http://localhost:9000)",
     ),
-    s3_access_key: str | None = typer.Option(
+    s3_access_key: str = typer.Option(
         None, "--s3-access-key", envvar="ENDO_S3_ACCESS_KEY", help="S3 access key ID"
     ),
-    s3_secret_key: str | None = typer.Option(
-        None, "--s3-secret-key", envvar="ENDO_S3_SECRET_KEY", help="S3 secret access key"
+    s3_secret_key: str = typer.Option(
+        None,
+        "--s3-secret-key",
+        envvar="ENDO_S3_SECRET_KEY",
+        help="S3 secret access key",
     ),
-    s3_bucket: str | None = typer.Option(
+    s3_bucket: str = typer.Option(
         None, "--s3-bucket", envvar="ENDO_S3_BUCKET", help="S3 bucket name"
     ),
-    s3_region: str | None = typer.Option(
-        None, "--s3-region", envvar="ENDO_S3_REGION", help="S3 region"
+    s3_region: str = typer.Option(
+        "us-east-1", "--s3-region", envvar="ENDO_S3_REGION", help="S3 region"
     ),
     host: str = typer.Option(
         "0.0.0.0", "--host", envvar="ENDO_HOST", help="Host to bind to"
@@ -45,25 +55,47 @@ def serve_cmd(
     port: int = typer.Option(
         8000, "--port", envvar="ENDO_PORT", help="Port to bind to"
     ),
-    reload: bool = typer.Option(
-        False, "--reload", envvar="ENDO_RELOAD", help="Enable auto-reload for development"
+    debug: bool = typer.Option(
+        False, "--debug", envvar="ENDO_DEBUG", help="Enable debug mode"
+    ),
+    pretty_json_logs: bool = typer.Option(
+        False,
+        "--pretty-json-logs",
+        envvar="ENDO_PRETTY_JSON_LOGS",
+        help="Pretty-print JSON log output",
     ),
 ):
     """Start the endoscope collector API service."""
-    _set_env("ENDO_PROJECT", project)
-    _set_env("ENDO_API_KEY", api_key)
-    _set_env("ENDO_S3_ENDPOINT", s3_endpoint)
-    _set_env("ENDO_S3_ACCESS_KEY", s3_access_key)
-    _set_env("ENDO_S3_SECRET_KEY", s3_secret_key)
-    _set_env("ENDO_S3_BUCKET", s3_bucket)
-    _set_env("ENDO_S3_REGION", s3_region)
+    missing = [
+        name
+        for name, val in [
+            ("--api-key", api_key),
+            ("--project", project),
+            ("--s3-access-key", s3_access_key),
+            ("--s3-secret-key", s3_secret_key),
+            ("--s3-bucket", s3_bucket),
+        ]
+        if not val
+    ]
 
-    uvicorn.run("endoscope.app:app", host=host, port=port, reload=reload)
+    if missing:
+        print(f"Required options not set: {', '.join(missing)}")
+        raise typer.Exit(code=1)
 
-
-def _set_env(key: str, value: str | None) -> None:
-    if value is not None:
-        os.environ[key] = value
+    cfg = EndoscopeConfig(
+        api_key=api_key,
+        project=project,
+        s3_endpoint=s3_endpoint,
+        s3_access_key=s3_access_key,
+        s3_secret_key=s3_secret_key,
+        s3_bucket=s3_bucket,
+        s3_region=s3_region,
+        host=host,
+        port=port,
+        debug=debug,
+        pretty_json_logs=pretty_json_logs,
+    )
+    uvicorn.run(create_app(cfg), host=host, port=port)
 
 
 def run():
