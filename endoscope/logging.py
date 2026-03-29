@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+from typing import Any
 import logging
 import environs
 
@@ -59,6 +60,6 @@ def configure() -> None:
     root.setLevel(logging.INFO)
 
 
-def _dump_pretty(obj: dict, **kwargs: object) -> str:
+def _dump_pretty(obj: dict, **kwargs: Any) -> str:
     kwargs.setdefault("default", str)
     return json.dumps(obj, indent=2, sort_keys=True, **kwargs)  # type: ignore[arg-type]

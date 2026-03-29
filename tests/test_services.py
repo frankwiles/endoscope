@@ -10,14 +10,19 @@ from endoscope.services import Session, SessionCreateRequest, SessionService
 
 
 def _make_session(**overrides) -> Session:
-    defaults = dict(
-        session_id=UUID("12345678-1234-1234-1234-123456789abc"),
-        timestamp=datetime(2026, 3, 28, 12, 0, 0, tzinfo=UTC),
-        project="test-project",
-        metadata=None,
-    )
+    defaults = {
+        "session_id": UUID("12345678-1234-1234-1234-123456789abc"),
+        "timestamp": datetime(2026, 3, 28, 12, 0, 0, tzinfo=UTC),
+        "project": "test-project",
+        "metadata": None,
+    }
     defaults.update(overrides)
-    return Session(**defaults)
+    return Session(
+        session_id=defaults["session_id"],
+        timestamp=defaults["timestamp"],
+        project=defaults["project"],
+        metadata=defaults["metadata"],
+    )
 
 
 # ---------------------------------------------------------------------------
