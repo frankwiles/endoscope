@@ -137,6 +137,7 @@ class EndoscopeAPIClient:
         # Download each file
         for filename in session.get("files", []):
             data = self.download_file(session_id, filename)
-            (session_dir / filename).write_bytes(data)
+            safe_name = Path(filename).name
+            (session_dir / safe_name).write_bytes(data)
 
         return session_dir

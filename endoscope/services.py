@@ -127,6 +127,11 @@ class SessionService:
     def __init__(self, storage: S3Storage) -> None:
         self._storage = storage
 
+    async def check_ready(self) -> bool:
+        """Check if the backing S3 storage is reachable."""
+        return await self._storage.check_ready()
+
+
     async def create_session(self, request: SessionCreateRequest) -> Session:
         session = Session(
             project=request.project,

@@ -28,10 +28,26 @@ class TestHealthz:
         assert resp.status_code == 200
         assert resp.text == "ok"
 
+    def test_bypasses_auth(self, cfg: EndoscopeConfig) -> None:
+        """Health endpoints should be accessible without an API key."""
+        cfg.api_key = "test-secret-key"
+        protected_client = TestClient(create_app(cfg))
+        resp = protected_client.get("/healthz")
+        assert resp.status_code == 200
+        assert resp.text == "ok"
+
 
 class TestReadyz:
     def test_returns_ready(self, client: TestClient):
         resp = client.get("/readyz")
+        assert resp.status_code == 200
+        assert resp.text == "ready"
+
+    def test_bypasses_auth(self, cfg: EndoscopeConfig) -> None:
+        """Readiness endpoints should be accessible without an API key."""
+        cfg.api_key = "test-secret-key"
+        protected_client = TestClient(create_app(cfg))
+        resp = protected_client.get("/readyz")
         assert resp.status_code == 200
         assert resp.text == "ready"
 
@@ -49,26 +65,27 @@ class TestAuthMiddleware:
         return TestClient(create_app(cfg))
 
     def test_rejects_missing_key(self, protected_client: TestClient):
-        resp = protected_client.get("/healthz")
+        resp = protected_client.get("/v1/sessions")
         assert resp.status_code == 401
         assert resp.json() == {"error": "unauthenticated"}
 
     def test_rejects_wrong_key(self, protected_client: TestClient):
-        resp = protected_client.get("/healthz", headers={"x-api-key": "wrong"})
+        resp = protected_client.get(
+            "/v1/sessions", headers={"x-api-key": "wrong"}
+        )
         assert resp.status_code == 401
         assert resp.json() == {"error": "unauthenticated"}
 
     def test_allows_correct_key(self, protected_client: TestClient):
         resp = protected_client.get(
-            "/healthz", headers={"x-api-key": "test-secret-key"}
+            "/v1/sessions", headers={"x-api-key": "test-secret-key"}
         )
         assert resp.status_code == 200
 
     def test_no_key_configured_allows_all(self, client: TestClient):
         """Default fixture has api_key="" — everything passes through."""
-        resp = client.get("/healthz")
+        resp = client.get("/v1/sessions")
         assert resp.status_code == 200
-
 
 # ---------------------------------------------------------------------------
 # POST /v1/sessions — create_session

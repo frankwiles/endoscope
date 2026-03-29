@@ -5,8 +5,10 @@ All routes delegate to SessionService for business logic.
 
 from __future__ import annotations
 
+import hmac
 from uuid import UUID
 
+import structlog
 from pydantic import ValidationError
 
 from starlette.applications import Starlette
@@ -26,12 +28,25 @@ from .services import (
 )
 
 
+
+log = structlog.get_logger()
+
+
 class AuthMiddleware(BaseHTTPMiddleware):
     async def dispatch(self, request: Request, call_next):
         cfg: EndoscopeConfig = request.app.state.cfg
+        # Health endpoints bypass authentication.
+        if request.url.path in ("/healthz", "/readyz"):
+            return await call_next(request)
         if cfg.api_key:
-            if request.headers.get("x-api-key") != cfg.api_key:
-                return JSONResponse({"error": "unauthenticated"}, status_code=401)
+            if not hmac.compare_digest(
+                request.headers.get("x-api-key", ""), cfg.api_key
+            ):
+                return JSONResponse(
+                    {"error": "unauthenticated"}, status_code=401
+                )
+        else:
+            log.warning("auth.no_api_key", msg="API key not configured — all requests allowed")
         return await call_next(request)
 
 
@@ -65,7 +80,15 @@ async def healthz(request: Request):
 
 
 async def readyz(request: Request):
-    return PlainTextResponse("ready")
+    """Readiness check — verifies S3 connectivity."""
+    svc = _svc(request)
+    try:
+        ok = await svc.check_ready()
+    except Exception:
+        ok = False
+    if ok:
+        return PlainTextResponse("ready")
+    return PlainTextResponse("not ready", status_code=503)
 
 
 # ---------------------------------------------------------------------------

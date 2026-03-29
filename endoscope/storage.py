@@ -138,3 +138,14 @@ class S3Storage:
                 ExpiresIn=expires_in,
             )
         return url
+    async def check_ready(self) -> bool:
+        """Lightweight S3 connectivity check."""
+        try:
+            async with self._client() as s3:
+                await s3.list_objects_v2(
+                    Bucket=self._bucket, MaxKeys=1
+                )
+            return True
+        except Exception:
+            log.warning("s3.health_check.failed")
+            return False

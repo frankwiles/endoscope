@@ -195,6 +195,34 @@ class TestPullSession:
         # No extra files besides metadata
         assert list(result.iterdir()) == [result / "metadata.json"]
 
+    def test_path_traversal_sanitized(self, tmp_path: Path) -> None:
+        """Filenames with path components are stripped to their basename."""
+        client = EndoscopeAPIClient(base_url="http://test")
+
+        session_data = {
+            "session_id": "sess-traversal",
+            "files": ["../evil.sh", "sub/nested.txt", "normal.txt"],
+        }
+        file_contents = {
+            "../evil.sh": b"evil",
+            "sub/nested.txt": b"nested",
+            "normal.txt": b"normal",
+        }
+
+        with patch.object(client, "get_session", return_value=session_data):
+            with patch.object(
+                client,
+                "download_file",
+                side_effect=lambda sid, f: file_contents[f],
+            ):
+                result = client.pull_session("sess-traversal", tmp_path)
+
+        # Files written with basename only — no directory escape
+        assert (result / "evil.sh").read_bytes() == b"evil"
+        assert (result / "nested.txt").read_bytes() == b"nested"
+        assert (result / "normal.txt").read_bytes() == b"normal"
+        # No file written outside the session dir
+        assert not (tmp_path / "evil.sh").exists()
 
 # ---------------------------------------------------------------------------
 # Error handling

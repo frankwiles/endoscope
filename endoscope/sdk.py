@@ -13,13 +13,13 @@ Usage::
 
 from __future__ import annotations
 
-import logging
+import structlog
 import os
 from typing import Any
 
 import httpx
 
-log = logging.getLogger(__name__)
+log = structlog.get_logger()
 
 
 class EndoscopeAuthError(Exception):

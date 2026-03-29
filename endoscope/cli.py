@@ -180,7 +180,7 @@ def serve_cmd(
     ]
 
     if missing:
-        print(f"Required options not set: {', '.join(missing)}")
+        err_console.print(f"Required options not set: {', '.join(missing)}")
         raise typer.Exit(code=1)
 
     cfg = EndoscopeConfig(
