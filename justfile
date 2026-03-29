@@ -48,3 +48,7 @@ run_python *ARGS:
 # Execute a Python file inside the api container
 run_python_file file:
     docker compose run --rm api python {{ file }}
+
+# Run pytest inside the api container (mounts project source)
+@test *ARGS:
+    docker compose run --rm -v $(pwd)/tests:/app/tests -v $(pwd)/endoscope:/app/endoscope api python -m pytest {{ ARGS }}
