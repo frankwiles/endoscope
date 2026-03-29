@@ -1,6 +1,7 @@
 # Frank Stuff
 .envrc
 .local_env
+frank-compose.yml
 
 # Python-generated files
 __pycache__/
@@ -16,3 +17,7 @@ venv
 
 # RustFS local storage
 storage/
+
+# Misc
+CLAUDE.md
+PROJECT-PLAN.md

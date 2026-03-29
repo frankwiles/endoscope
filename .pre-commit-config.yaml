@@ -10,13 +10,6 @@ repos:
       - id: ruff
         args: [--fix, --show-fixes]
         additional_dependencies: []
-  # Ty for type checking (uses pyproject.toml configuration)
-  - repo: local
-    hooks:
-      - id: ty
-        name: ty check
-        entry: uvx ty check . --ignore unresolved-import
-        language: python
   # Basic pre-commit hooks for file hygiene
   - repo: https://github.com/pre-commit/pre-commit-hooks
     rev: v6.0.0

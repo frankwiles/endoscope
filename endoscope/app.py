@@ -1,7 +1,6 @@
 import os
 import uuid
 from datetime import datetime, timezone
-from typing import Any, Dict
 
 from starlette.applications import Starlette
 from starlette.middleware import Middleware
@@ -10,8 +9,7 @@ from starlette.requests import Request
 from starlette.responses import JSONResponse, PlainTextResponse
 from starlette.routing import Route
 
-# Simple in‑memory store for sessions
-SESSIONS: Dict[str, Dict[str, Any]] = {}
+# Sessions are persisted in S3; no in‑memory store
 
 
 # Authentication middleware
@@ -45,16 +43,32 @@ async def create_session(request: Request):
         "events": [],
         "files": [],
     }
-    SESSIONS[session_id] = session
+    # Store manifest in S3
+    import json
+    import boto3
+    s3 = boto3.client('s3')
+    bucket = os.getenv('ENDO_S3_BUCKET')
+    if bucket:
+        s3.put_object(Bucket=bucket, Key=f"{session_id}/manifest.json", Body=json.dumps(session).encode())
     return JSONResponse(session, status_code=201)
 
 
 async def add_event(request: Request):
     session_id = request.path_params["session_id"]
-    if session_id not in SESSIONS:
+    # Load session manifest from S3
+    import json
+    import boto3
+    s3 = boto3.client('s3')
+    bucket = os.getenv('ENDO_S3_BUCKET')
+    try:
+        obj = s3.get_object(Bucket=bucket, Key=f"{session_id}/manifest.json")
+        session = json.loads(obj['Body'].read())
+    except Exception:
         return JSONResponse({"error": "session not found"}, status_code=404)
     data = await request.json()
-    SESSIONS[session_id]["events"].append(data)
+    session.setdefault('events', []).append(data)
+    # Save updated manifest
+    s3.put_object(Bucket=bucket, Key=f"{session_id}/manifest.json", Body=json.dumps(session).encode())
     return JSONResponse({"status": "ok"})
 
 
@@ -64,7 +78,15 @@ async def add_file(request: Request):
     Returns ``upload_url`` JSON. Records expected file location in session.
     """
     session_id = request.path_params["session_id"]
-    if session_id not in SESSIONS:
+    # Load session manifest from S3
+    import json
+    import boto3
+    s3 = boto3.client('s3')
+    bucket = os.getenv('ENDO_S3_BUCKET')
+    try:
+        obj = s3.get_object(Bucket=bucket, Key=f"{session_id}/manifest.json")
+        session = json.loads(obj['Body'].read())
+    except Exception:
         return JSONResponse({"error": "session not found"}, status_code=404)
     form = await request.form()
     filename = form.get("filename")
@@ -86,15 +108,24 @@ async def add_file(request: Request):
         )
     except Exception as e:
         return JSONResponse({"error": str(e)}, status_code=500)
-    SESSIONS[session_id]["files"].append(
-        {"filename": filename, "path": f"s3://{bucket}/{s3_key}"}
-    )
+    session.setdefault('files', []).append({"filename": filename, "path": f"s3://{bucket}/{s3_key}"})
+    # Save updated manifest
+    s3.put_object(Bucket=bucket, Key=f"{session_id}/manifest.json", Body=json.dumps(session).encode())
     return JSONResponse({"upload_url": upload_url})
 
 
 async def get_manifest(request: Request):
     session_id = request.path_params["session_id"]
-    sess = SESSIONS.get(session_id)
+    # Load session manifest from S3
+    import json
+    import boto3
+    s3 = boto3.client('s3')
+    bucket = os.getenv('ENDO_S3_BUCKET')
+    try:
+        obj = s3.get_object(Bucket=bucket, Key=f"{session_id}/manifest.json")
+        sess = json.loads(obj['Body'].read())
+    except Exception:
+        sess = None
     if not sess:
         return JSONResponse({"error": "session not found"}, status_code=404)
     return JSONResponse(
