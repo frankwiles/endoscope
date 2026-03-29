@@ -126,61 +126,6 @@ async def test_get_session_not_found():
 
 
 # ---------------------------------------------------------------------------
-# SessionService.get_or_create_session
-# ---------------------------------------------------------------------------
-
-
-@pytest.mark.asyncio
-async def test_get_or_create_returns_existing():
-    stored = _make_session()
-    storage = AsyncMock()
-    storage.find_key_by_suffix.return_value = stored.metadata_key
-    storage.get_json.return_value = stored.model_dump(mode="json")
-
-    svc = SessionService(storage=storage)
-    result = await svc.get_or_create_session(stored.session_id, "test-project")
-
-    assert result.session_id == stored.session_id
-    assert result.project == stored.project
-    # Must NOT have written anything — session already existed.
-    storage.put_json.assert_not_awaited()
-
-
-@pytest.mark.asyncio
-async def test_get_or_create_creates_when_missing():
-    storage = AsyncMock()
-    storage.find_key_by_suffix.return_value = None
-
-    svc = SessionService(storage=storage)
-    sid = UUID("aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee")
-    result = await svc.get_or_create_session(sid, "new-proj", metadata={"env": "dev"})
-
-    assert result.session_id == sid
-    assert result.project == "new-proj"
-    assert result.metadata == {"env": "dev"}
-    storage.put_json.assert_awaited_once()
-    call_key = storage.put_json.call_args[1]["key"]
-    assert call_key.startswith("new-proj/")
-    assert call_key.endswith("/metadata.json")
-
-
-@pytest.mark.asyncio
-async def test_get_or_create_without_metadata():
-    storage = AsyncMock()
-    storage.find_key_by_suffix.return_value = None
-
-    svc = SessionService(storage=storage)
-    sid = UUID("11111111-2222-3333-4444-555555555555")
-    result = await svc.get_or_create_session(sid, "proj")
-
-    assert result.session_id == sid
-    assert result.metadata is None
-    data = storage.put_json.call_args[1]["data"]
-    assert data["metadata"] is None
-
-
-
-# ---------------------------------------------------------------------------
 # SessionService.list_sessions
 # ---------------------------------------------------------------------------
 

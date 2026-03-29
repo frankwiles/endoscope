@@ -7,6 +7,8 @@ from __future__ import annotations
 
 from uuid import UUID
 
+from pydantic import ValidationError
+
 from starlette.applications import Starlette
 from starlette.middleware import Middleware
 from starlette.middleware.base import BaseHTTPMiddleware
@@ -16,6 +18,7 @@ from starlette.routing import Route
 
 from .config import EndoscopeConfig
 from .services import (
+    PruneRequest,
     SessionCreateRequest,
     SessionService,
     make_session_service,
@@ -103,16 +106,7 @@ async def get_session(request: Request):
     if session is None:
         return JSONResponse({"error": "session not found"}, status_code=404)
 
-    return JSONResponse(
-        {
-            "session_id": str(session.session_id),
-            "project": session.project,
-            "timestamp": session.timestamp.isoformat(),
-            "metadata": session.metadata,
-            "events": session.events,
-            "files": session.files,
-        }
-    )
+    return JSONResponse(session.model_dump(mode="json"))
 
 
 async def delete_session(request: Request):
@@ -205,14 +199,16 @@ async def prune_sessions(request: Request):
     svc = _svc(request)
     data = await request.json()
 
-    prune_all = data.get("all", False)
-    older_than_str = data.get("older_than")
+    try:
+        req = PruneRequest.model_validate(data)
+    except ValidationError as e:
+        return JSONResponse({"error": str(e)}, status_code=400)
 
-    if prune_all:
+    if req.all:
         count = await svc.prune_sessions(cfg.project, all=True)
-    elif older_than_str:
+    elif req.older_than:
         try:
-            older_than = parse_duration(older_than_str)
+            older_than = parse_duration(req.older_than)
         except ValueError as e:
             return JSONResponse({"error": str(e)}, status_code=400)
         count = await svc.prune_sessions(cfg.project, older_than=older_than)

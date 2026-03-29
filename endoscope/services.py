@@ -164,39 +164,6 @@ class SessionService:
             return None
         return Session.model_validate(data)
 
-    async def get_or_create_session(
-        self,
-        session_id: UUID,
-        project: str,
-        metadata: dict | None = None,
-    ) -> Session:
-        """Return an existing session, or create one with the given identity.
-
-        Idempotent: if a session with *session_id* already exists under
-        *project*, it is returned as-is.  Otherwise a new session is
-        persisted and returned.
-        """
-        existing = await self.get_session(session_id, project)
-        if existing is not None:
-            return existing
-
-        session = Session(
-            session_id=session_id,
-            project=project,
-            metadata=metadata,
-        )
-        await self._storage.put_json(
-            key=session.metadata_key,
-            data=session.model_dump(mode="json"),
-        )
-        log.info(
-            "session.created",
-            session_id=str(session.session_id),
-            project=session.project,
-            key=session.metadata_key,
-        )
-        return session
-
     # ------------------------------------------------------------------
     # Write operations
     # ------------------------------------------------------------------
@@ -251,9 +218,8 @@ class SessionService:
     async def list_sessions(self, project: str) -> list[SessionSummary]:
         """List all sessions for a project, most recent first.
 
-        Parses session_id and timestamp from key paths to avoid fetching
-        every metadata.json. Event/file counts require reading metadata
-        (acceptable for list display).
+        Parses session_id and timestamp from key paths, then fetches
+        each metadata.json for accurate event and file counts.
         """
         keys = await self._storage.list_keys(prefix=f"{project}/")
         metadata_keys = [k for k in keys if k.endswith("/metadata.json")]
