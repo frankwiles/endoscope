@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-import os
+import environs
 from datetime import UTC, datetime
 from uuid import UUID, uuid4
 
@@ -125,11 +125,12 @@ class SessionService:
 
 def make_session_service() -> SessionService:
     """Build a SessionService from the current environment."""
+    env = environs.Env()
     storage = S3Storage(
-        endpoint_url=os.environ["ENDO_S3_ENDPOINT"],
-        access_key=os.environ["ENDO_S3_ACCESS_KEY"],
-        secret_key=os.environ["ENDO_S3_SECRET_KEY"],
-        bucket=os.environ["ENDO_S3_BUCKET"],
-        region=os.environ.get("ENDO_S3_REGION", "us-east-1"),
+        endpoint_url=env.str("ENDO_S3_ENDPOINT"),
+        access_key=env.str("ENDO_S3_ACCESS_KEY"),
+        secret_key=env.str("ENDO_S3_SECRET_KEY"),
+        bucket=env.str("ENDO_S3_BUCKET"),
+        region=env.str("ENDO_S3_REGION", "us-east-1"),
     )
     return SessionService(storage=storage)

@@ -9,6 +9,10 @@ services:
       ENDO_S3_SECRET_KEY: rustfsadmin
       ENDO_S3_BUCKET: endoscope
       ENDO_API_KEY: local-dev-api-key
+      ENDO_RELOAD: true
+      ENDO_PRETTY_JSON_LOGS: true 
+    volumes:
+      - ./endoscope:/app/endoscope
     depends_on:
       rustfs:
         condition: service_healthy

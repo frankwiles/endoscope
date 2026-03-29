@@ -1,12 +1,14 @@
 from contextlib import asynccontextmanager
 
-import os
+import environs
 
 from starlette.applications import Starlette
 from starlette.middleware import Middleware
 from starlette.requests import Request
 from starlette.responses import JSONResponse
 from starlette.routing import Route
+
+import structlog
 
 from endoscope.services import SessionCreateRequest, SessionService, make_session_service
 
@@ -15,7 +17,7 @@ from endoscope.services import SessionCreateRequest, SessionService, make_sessio
 # Auth
 # ---------------------------------------------------------------------------
 
-_API_KEY = os.environ.get("ENDO_API_KEY", "")
+_API_KEY = environs.Env().str("ENDO_API_KEY", "")
 
 
 def _check_auth(request: Request) -> JSONResponse | None:
@@ -37,23 +39,32 @@ def _check_auth(request: Request) -> JSONResponse | None:
 
 
 async def healthz(request: Request):
+    log.info("healthz.ok")
     return JSONResponse({"status": "ok"})
 
 
 async def readyz(request: Request):
+    log.info("readyz.ok")
     return JSONResponse({"status": "ready"})
 
 
+log = structlog.get_logger("endoscope.app")
+
 async def create_session(request: Request):
     if err := _check_auth(request):
+        log.warning("session.create.auth_failed")
         return err
 
     svc: SessionService = request.app.state.session_service
     body = await request.json()
     req = SessionCreateRequest.model_validate(body)
     session = await svc.create_session(req)
+    log.info(
+        "session.create.ok",
+        session_id=str(session.session_id),
+        project=session.project,
+    )
     return JSONResponse(session.model_dump(mode="json"), status_code=201)
-
 
 # ---------------------------------------------------------------------------
 # App factory
@@ -61,8 +72,14 @@ async def create_session(request: Request):
 
 @asynccontextmanager
 async def _lifespan(app: Starlette):
+    from endoscope.logging import configure
+
+    configure()
+    log = structlog.get_logger("endoscope.app")
+    log.info("app.starting")
     app.state.session_service = make_session_service()
     yield
+    log.info("app.stopping")
 
 
 routes = [

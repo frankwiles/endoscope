@@ -46,7 +46,7 @@ def serve_cmd(
         8000, "--port", envvar="ENDO_PORT", help="Port to bind to"
     ),
     reload: bool = typer.Option(
-        False, "--reload", help="Enable auto-reload for development"
+        False, "--reload", envvar="ENDO_RELOAD", help="Enable auto-reload for development"
     ),
 ):
     """Start the endoscope collector API service."""
