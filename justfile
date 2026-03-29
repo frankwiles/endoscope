@@ -20,13 +20,16 @@ set dotenv-load := false
 @logs *ARGS:
     docker compose logs {{ ARGS }}
 
+# Rebuild the containers used by docker compose
 @rebuild:
     docker compose rm --force api
     docker compose build --force-rm api
 
+# Restart a docker compose service by name
 @restart *ARGS:
     docker compose restart {{ ARGS }}
 
+# Follow all docker compose logs
 @tail:
     just logs --follow --tail 100
 

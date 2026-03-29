@@ -64,7 +64,7 @@ async def create_session(request: Request):
         async with _s3_client(cfg, session_obj) as s3:
             await s3.put_object(
                 Bucket=cfg.s3_bucket,
-                Key=f"{session_id}/manifest.json",
+                Key=f"{session_id}/metadata.json",
                 Body=json.dumps(session).encode(),
             )
     return JSONResponse(session, status_code=201)
@@ -78,7 +78,9 @@ async def add_event(request: Request):
     session_obj = _s3_session(cfg)
     async with _s3_client(cfg, session_obj) as s3:
         try:
-            obj = await s3.get_object(Bucket=cfg.s3_bucket, Key=f"{session_id}/manifest.json")
+            obj = await s3.get_object(
+                Bucket=cfg.s3_bucket, Key=f"{session_id}/metadata.json"
+            )
             session = json.loads(await obj["Body"].read())
         except Exception:
             return JSONResponse({"error": "session not found"}, status_code=404)
@@ -86,7 +88,7 @@ async def add_event(request: Request):
         session.setdefault("events", []).append(data)
         await s3.put_object(
             Bucket=cfg.s3_bucket,
-            Key=f"{session_id}/manifest.json",
+            Key=f"{session_id}/metadata.json",
             Body=json.dumps(session).encode(),
         )
     return JSONResponse({"status": "ok"})
@@ -104,7 +106,9 @@ async def add_file(request: Request):
     session_obj = _s3_session(cfg)
     async with _s3_client(cfg, session_obj) as s3:
         try:
-            obj = await s3.get_object(Bucket=cfg.s3_bucket, Key=f"{session_id}/manifest.json")
+            obj = await s3.get_object(
+                Bucket=cfg.s3_bucket, Key=f"{session_id}/metadata.json"
+            )
             session = json.loads(await obj["Body"].read())
         except Exception:
             return JSONResponse({"error": "session not found"}, status_code=404)
@@ -127,13 +131,13 @@ async def add_file(request: Request):
         )
         await s3.put_object(
             Bucket=cfg.s3_bucket,
-            Key=f"{session_id}/manifest.json",
+            Key=f"{session_id}/metadata.json",
             Body=json.dumps(session).encode(),
         )
     return JSONResponse({"upload_url": upload_url})
 
 
-async def get_manifest(request: Request):
+async def get_metadata(request: Request):
     cfg: EndoscopeConfig = request.app.state.cfg
     session_id = request.path_params["session_id"]
     if not cfg.s3_bucket:
@@ -141,7 +145,9 @@ async def get_manifest(request: Request):
     session_obj = _s3_session(cfg)
     async with _s3_client(cfg, session_obj) as s3:
         try:
-            obj = await s3.get_object(Bucket=cfg.s3_bucket, Key=f"{session_id}/manifest.json")
+            obj = await s3.get_object(
+                Bucket=cfg.s3_bucket, Key=f"{session_id}/metadata.json"
+            )
             sess = json.loads(await obj["Body"].read())
         except Exception:
             sess = None
@@ -167,7 +173,7 @@ def create_app(cfg: EndoscopeConfig) -> Starlette:
             Route("/v1/sessions", create_session, methods=["POST"]),
             Route("/v1/sessions/{session_id}/events", add_event, methods=["POST"]),
             Route("/v1/sessions/{session_id}/files", add_file, methods=["POST"]),
-            Route("/v1/sessions/{session_id}/manifest", get_manifest, methods=["GET"]),
+            Route("/v1/sessions/{session_id}/metadata", get_metadata, methods=["GET"]),
         ],
         middleware=[Middleware(AuthMiddleware)],
     )
