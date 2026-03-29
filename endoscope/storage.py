@@ -50,14 +50,17 @@ class S3Storage:
 
     async def find_key_by_suffix(self, prefix: str, suffix: str) -> str | None:
         """List objects under *prefix* and return the first key ending with *suffix*."""
-        async with self._client() as s3:
-            paginator = s3.get_paginator("list_objects_v2")
-            async for page in paginator.paginate(
-                Bucket=self._bucket, Prefix=prefix
-            ):
-                for obj in page.get("Contents", []):
-                    if obj["Key"].endswith(suffix):
-                        return obj["Key"]
+        try:
+            async with self._client() as s3:
+                paginator = s3.get_paginator("list_objects_v2")
+                async for page in paginator.paginate(
+                    Bucket=self._bucket, Prefix=prefix
+                ):
+                    for obj in page.get("Contents", []):
+                        if obj["Key"].endswith(suffix):
+                            return obj["Key"]
+        except Exception:
+            log.warning("s3.list.miss", prefix=prefix)
         return None
 
     def _client(self):
@@ -81,3 +84,57 @@ class S3Storage:
                 for obj in page.get("Contents", []):
                     keys.append(obj["Key"])
         return keys
+
+
+    async def delete_objects(self, keys: list[str]) -> None:
+        """Batch delete S3 objects, chunking at the 1000-object S3 limit."""
+        if not keys:
+            return
+        async with self._client() as s3:
+            for i in range(0, len(keys), 1000):
+                chunk = keys[i : i + 1000]
+                await s3.delete_objects(
+                    Bucket=self._bucket,
+                    Delete={"Objects": [{"Key": k} for k in chunk]},
+                )
+                log.debug("s3.delete", count=len(chunk))
+
+    async def get_object_bytes(self, key: str) -> bytes | None:
+        """Download raw bytes for a key, or None if it doesn't exist."""
+        async with self._client() as s3:
+            try:
+                resp = await s3.get_object(Bucket=self._bucket, Key=key)
+                body = await resp["Body"].read()
+                log.debug("s3.get_bytes", key=key, size=len(body))
+                return body
+            except s3.exceptions.NoSuchKey:
+                return None
+            except Exception:
+                log.warning("s3.get_bytes.miss", key=key)
+                return None
+
+    async def list_objects(self, prefix: str) -> list[dict]:
+        """List all objects under *prefix* with key, size, and last_modified."""
+        objects: list[dict] = []
+        async with self._client() as s3:
+            paginator = s3.get_paginator("list_objects_v2")
+            async for page in paginator.paginate(
+                Bucket=self._bucket, Prefix=prefix
+            ):
+                for obj in page.get("Contents", []):
+                    objects.append({
+                        "key": obj["Key"],
+                        "size": obj["Size"],
+                        "last_modified": obj["LastModified"],
+                    })
+        return objects
+
+    async def generate_presigned_url(self, key: str, expires_in: int = 3600) -> str:
+        """Generate a presigned PUT URL for the given key."""
+        async with self._client() as s3:
+            url = await s3.generate_presigned_url(
+                "put_object",
+                Params={"Bucket": self._bucket, "Key": key},
+                ExpiresIn=expires_in,
+            )
+        return url

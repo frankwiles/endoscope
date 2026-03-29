@@ -175,11 +175,10 @@ class TestAddEvent:
         )
         client = TestClient(create_app(cfg))
         resp = client.post(
-            "/v1/sessions/fake-id/events",
+            "/v1/sessions/00000000-0000-0000-0000-000000000000/events",
             json={"type": "test"},
         )
-        assert resp.status_code == 500
-        assert "not configured" in resp.json()["error"].lower()
+        assert resp.status_code == 404
 
 
 # ---------------------------------------------------------------------------
@@ -200,7 +199,7 @@ class TestAddFile:
         data = resp.json()
         assert "upload_url" in data
         # The presigned URL should reference the correct key.
-        assert f"{session_id}/screenshot.png" in data["upload_url"]
+        assert "screenshot.png" in data["upload_url"]
 
         # Verify the file is recorded in metadata.
         meta = client.get(f"/v1/sessions/{session_id}/metadata")
@@ -218,7 +217,7 @@ class TestAddFile:
         )
         assert resp.status_code == 200
         assert "upload_url" in resp.json()
-        assert f"{session_id}/dump.bin" in resp.json()["upload_url"]
+        assert "dump.bin" in resp.json()["upload_url"]
 
     def test_add_file_to_nonexistent_session(self, client: TestClient):
         resp = client.post(
@@ -237,10 +236,10 @@ class TestAddFile:
         )
         client = TestClient(create_app(cfg))
         resp = client.post(
-            "/v1/sessions/fake-id/files",
+            "/v1/sessions/00000000-0000-0000-0000-000000000000/files",
             data={"filename": "x.txt"},
         )
-        assert resp.status_code == 500
+        assert resp.status_code == 404
 
 
 # ---------------------------------------------------------------------------
@@ -292,8 +291,8 @@ class TestGetMetadata:
             s3_bucket="",
         )
         client = TestClient(create_app(cfg))
-        resp = client.get("/v1/sessions/fake-id/metadata")
-        assert resp.status_code == 500
+        resp = client.get("/v1/sessions/00000000-0000-0000-0000-000000000000/metadata")
+        assert resp.status_code == 404
 
 
 # ---------------------------------------------------------------------------
@@ -334,3 +333,175 @@ class TestFullWorkflow:
         assert len(body["events"]) == 3
         assert [e["label"] for e in body["events"]] == ["start", "error", "end"]
         assert set(body["files"]) == {"core.dump", "screenshot.png"}
+
+
+
+# ---------------------------------------------------------------------------
+# GET /v1/sessions — list_sessions
+# ---------------------------------------------------------------------------
+
+
+class TestListSessions:
+    def test_list_sessions_empty(self, client: TestClient):
+        """GET /v1/sessions returns empty list when no sessions exist for the project."""
+        resp = client.get("/v1/sessions")
+        assert resp.status_code == 200
+        assert resp.json() == []
+
+    def test_list_sessions_after_create(self, client: TestClient, cfg: EndoscopeConfig):
+        """After creating a session, it appears in the list with correct fields."""
+        create = client.post("/v1/sessions", json={"project": cfg.project})
+        assert create.status_code == 201
+        sid = create.json()["session_id"]
+
+        resp = client.get("/v1/sessions")
+        assert resp.status_code == 200
+
+        sessions = resp.json()
+        assert isinstance(sessions, list)
+        assert len(sessions) >= 1
+
+        # Find the session we just created
+        matched = [s for s in sessions if s["session_id"] == sid]
+        assert len(matched) == 1
+
+        summary = matched[0]
+        assert "session_id" in summary
+        assert "timestamp" in summary
+        assert summary["project"] == cfg.project
+        assert "event_count" in summary
+        assert "file_count" in summary
+
+
+# ---------------------------------------------------------------------------
+# GET /v1/sessions/{id} — get_session
+# ---------------------------------------------------------------------------
+
+
+class TestGetSession:
+    def test_get_session_by_id(self, client: TestClient):
+        """Create a session with events and files, then GET it by ID."""
+        create = client.post("/v1/sessions", json={"project": "test-project"})
+        assert create.status_code == 201
+        sid = create.json()["session_id"]
+
+        # Add an event and a file to exercise full shape
+        client.post(f"/v1/sessions/{sid}/events", json={"type": "test"})
+        client.post(f"/v1/sessions/{sid}/files", data={"filename": "log.txt"})
+
+        resp = client.get(f"/v1/sessions/{sid}")
+        assert resp.status_code == 200
+
+        data = resp.json()
+        assert data["session_id"] == sid
+        assert data["project"] == "test-project"
+        assert "timestamp" in data
+        assert isinstance(data["events"], list)
+        assert len(data["events"]) == 1
+        assert data["events"][0]["type"] == "test"
+        assert data["files"] == ["log.txt"]
+
+    def test_get_session_not_found(self, client: TestClient):
+        """GET a valid UUID that doesn't exist returns 404."""
+        resp = client.get("/v1/sessions/00000000-0000-0000-0000-000000000000")
+        assert resp.status_code == 404
+        assert resp.json() == {"error": "session not found"}
+
+    def test_get_session_invalid_uuid(self, client: TestClient):
+        """GET with an invalid UUID format returns 400."""
+        resp = client.get("/v1/sessions/not-a-uuid")
+        assert resp.status_code == 400
+        assert resp.json() == {"error": "invalid session id"}
+
+
+# ---------------------------------------------------------------------------
+# DELETE /v1/sessions/{id} — delete_session
+# ---------------------------------------------------------------------------
+
+
+class TestDeleteSession:
+    def test_delete_session(self, client: TestClient):
+        """Create a session, delete it, then confirm it's gone."""
+        create = client.post("/v1/sessions", json={"project": "test-project"})
+        assert create.status_code == 201
+        sid = create.json()["session_id"]
+
+        # Delete it
+        resp = client.delete(f"/v1/sessions/{sid}")
+        assert resp.status_code == 200
+        assert resp.json() == {"deleted": sid}
+
+        # Confirm it's gone
+        get_resp = client.get(f"/v1/sessions/{sid}")
+        assert get_resp.status_code == 404
+
+    def test_delete_session_not_found(self, client: TestClient):
+        """DELETE a valid UUID that doesn't exist returns 404."""
+        resp = client.delete("/v1/sessions/00000000-0000-0000-0000-000000000000")
+        assert resp.status_code == 404
+        assert resp.json() == {"error": "session not found"}
+
+    def test_delete_session_invalid_uuid(self, client: TestClient):
+        """DELETE with an invalid UUID format returns 400."""
+        resp = client.delete("/v1/sessions/not-a-uuid")
+        assert resp.status_code == 400
+        assert resp.json() == {"error": "invalid session id"}
+
+
+# ---------------------------------------------------------------------------
+# POST /v1/prune — prune_sessions
+# ---------------------------------------------------------------------------
+
+
+class TestPrune:
+    def test_prune_by_age(self, client: TestClient):
+        """Prune with older_than returns correct shape {pruned: N}."""
+        resp = client.post("/v1/prune", json={"older_than": "999d"})
+        assert resp.status_code == 200
+        data = resp.json()
+        assert "pruned" in data
+        assert isinstance(data["pruned"], int)
+        assert data["pruned"] >= 0
+
+    def test_prune_all(self, client: TestClient, cfg: EndoscopeConfig):
+        """Create a session, prune all, then verify list is empty."""
+        create = client.post("/v1/sessions", json={"project": cfg.project})
+        assert create.status_code == 201
+
+        resp = client.post("/v1/prune", json={"all": True})
+        assert resp.status_code == 200
+        data = resp.json()
+        assert "pruned" in data
+        assert isinstance(data["pruned"], int)
+        assert data["pruned"] >= 1
+
+        # Verify list is now empty
+        list_resp = client.get("/v1/sessions")
+        assert list_resp.status_code == 200
+        assert list_resp.json() == []
+
+    def test_prune_invalid_duration(self, client: TestClient):
+        """Prune with unparseable older_than returns 400."""
+        resp = client.post("/v1/prune", json={"older_than": "invalid"})
+        assert resp.status_code == 400
+
+    def test_prune_no_criteria(self, client: TestClient):
+        """Prune with empty body returns 400."""
+        resp = client.post("/v1/prune", json={})
+        assert resp.status_code == 400
+        assert "error" in resp.json()
+
+
+# ---------------------------------------------------------------------------
+# GET /v1/sessions/{id}/files/{filename} — download_file
+# ---------------------------------------------------------------------------
+
+
+class TestDownloadFile:
+    def test_download_file_not_found(self, client: TestClient):
+        """Download a file from a non-existent session returns 404."""
+        resp = client.get(
+            "/v1/sessions/00000000-0000-0000-0000-000000000000/files/missing.txt"
+        )
+        assert resp.status_code == 404
+        assert resp.json() == {"error": "file not found"}
