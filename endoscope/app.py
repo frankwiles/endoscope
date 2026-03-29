@@ -1,19 +1,17 @@
 import os
 import uuid
-import json
 from datetime import datetime, timezone
-from typing import Dict, Any
+from typing import Any, Dict
+
 from starlette.applications import Starlette
+from starlette.middleware import Middleware
+from starlette.middleware.base import BaseHTTPMiddleware
+from starlette.requests import Request
 from starlette.responses import JSONResponse, PlainTextResponse
 from starlette.routing import Route
-from starlette.middleware import Middleware
-from starlette.requests import Request
-from starlette.middleware.base import BaseHTTPMiddleware
-from starlette.datastructures import UploadFile
-from pathlib import Path
 
 # Simple in‑memory store for sessions
-_sessions: Dict[str, Dict[str, Any]] = {}
+SESSIONS: Dict[str, Dict[str, Any]] = {}
 
 
 # Authentication middleware
@@ -47,43 +45,56 @@ async def create_session(request: Request):
         "events": [],
         "files": [],
     }
-    _sessions[session_id] = session
+    SESSIONS[session_id] = session
     return JSONResponse(session, status_code=201)
 
 
 async def add_event(request: Request):
     session_id = request.path_params["session_id"]
-    if session_id not in _sessions:
+    if session_id not in SESSIONS:
         return JSONResponse({"error": "session not found"}, status_code=404)
     data = await request.json()
-    _sessions[session_id]["events"].append(data)
+    SESSIONS[session_id]["events"].append(data)
     return JSONResponse({"status": "ok"})
 
 
 async def add_file(request: Request):
+    """Generate a signed S3 URL for direct upload.
+
+    Returns ``upload_url`` JSON. Records expected file location in session.
+    """
     session_id = request.path_params["session_id"]
-    if session_id not in _sessions:
+    if session_id not in SESSIONS:
         return JSONResponse({"error": "session not found"}, status_code=404)
     form = await request.form()
-    file = form.get("file")
-    filename = form.get("filename") or getattr(file, "filename", "upload.bin")
-    base_path = Path("data") / session_id
-    base_path.mkdir(parents=True, exist_ok=True)
-    path = base_path / filename
-    # Ensure file is an UploadFile before reading
-    if isinstance(file, UploadFile):
-        content = await file.read()
-    else:
-        content = b""
-    with open(path, "wb") as f:
-        f.write(content)
-    _sessions[session_id]["files"].append({"filename": filename, "path": path})
-    return JSONResponse({"status": "ok"})
+    filename = form.get("filename")
+    if not filename:
+        file = form.get("file")
+        filename = getattr(file, "filename", "upload.bin")
+    s3_key = f"{session_id}/{filename}"
+    import boto3
+
+    s3_client = boto3.client("s3")
+    bucket = os.getenv("ENDO_S3_BUCKET")
+    if not bucket:
+        return JSONResponse({"error": "S3 bucket not configured"}, status_code=500)
+    try:
+        upload_url = s3_client.generate_presigned_url(
+            "put_object",
+            Params={"Bucket": bucket, "Key": s3_key},
+            ExpiresIn=3600,
+        )
+    except Exception as e:
+        return JSONResponse({"error": str(e)}, status_code=500)
+    SESSIONS[session_id]["files"].append(
+        {"filename": filename, "path": f"s3://{bucket}/{s3_key}"}
+    )
+    return JSONResponse({"upload_url": upload_url})
 
 
 async def get_manifest(request: Request):
     session_id = request.path_params["session_id"]
-    sess = _sessions.get(session_id)
+    sess = SESSIONS.get(session_id)
     if not sess:
         return JSONResponse({"error": "session not found"}, status_code=404)
     return JSONResponse(
