@@ -69,3 +69,15 @@ class S3Storage:
             region_name=self._region,
             config=self._config,
         )
+
+    async def list_keys(self, prefix: str) -> list[str]:
+        """List all object keys under *prefix*.
+
+        Returns a list of keys (str)."""
+        keys: list[str] = []
+        async with self._client() as s3:
+            paginator = s3.get_paginator("list_objects_v2")
+            async for page in paginator.paginate(Bucket=self._bucket, Prefix=prefix):
+                for obj in page.get("Contents", []):
+                    keys.append(obj["Key"])
+        return keys
