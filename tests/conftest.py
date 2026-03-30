@@ -10,12 +10,15 @@ Run via:  just test tests/test_app.py -v
 from __future__ import annotations
 
 import os
+import uuid
 
 import pytest
 from starlette.testclient import TestClient
 
 from endoscope.app import create_app
 from endoscope.config import EndoscopeConfig
+from endoscope.services import SessionService
+from endoscope.storage import S3Storage
 
 
 def _cfg_from_env() -> EndoscopeConfig:
@@ -42,3 +45,26 @@ def cfg() -> EndoscopeConfig:
 def client(cfg: EndoscopeConfig) -> TestClient:
     """Starlette test client wired to a real RustFS-backed config."""
     return TestClient(create_app(cfg))
+
+
+@pytest.fixture()
+def storage() -> S3Storage:
+    """Real S3Storage pointed at the Docker Compose RustFS instance."""
+    return S3Storage(
+        endpoint_url=os.getenv("ENDO_S3_ENDPOINT", "http://rustfs:9000"),
+        access_key=os.getenv("ENDO_S3_ACCESS_KEY", "rustfsadmin"),
+        secret_key=os.getenv("ENDO_S3_SECRET_KEY", "rustfsadmin"),
+        bucket=os.getenv("ENDO_S3_BUCKET", "endoscope"),
+    )
+
+
+@pytest.fixture()
+def project() -> str:
+    """Unique project name per test to avoid data collisions."""
+    return f"test-{uuid.uuid4()}"
+
+
+@pytest.fixture()
+def svc(storage: S3Storage) -> SessionService:
+    """SessionService wired to real S3Storage."""
+    return SessionService(storage=storage)

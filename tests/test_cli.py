@@ -1,65 +1,60 @@
-"""Tests for the Typer CLI commands.
+"""Integration tests for the Typer CLI commands.
 
-Uses typer.testing.CliRunner and mocks EndoscopeAPIClient so no real
-network calls are made.
-
-Note: Shared callback options (--api-key, --api-url, --project) must be
-placed *before* the subcommand name in the argument list for this Typer
-version, e.g.  ["--api-key", "k", "--project", "p", "list"].
+All tests invoke the CLI via typer.testing.CliRunner and hit the real API
+at http://api:8000 over the Docker Compose network.  No mocks are used.
 """
 
 from __future__ import annotations
 
 import json
-from pathlib import Path
-from unittest.mock import MagicMock, patch
 
+import httpx
+import pytest
 from typer.testing import CliRunner
 
 from endoscope.cli import app
 
 runner = CliRunner()
 
-# ---------------------------------------------------------------------------
-# Shared constants
-# ---------------------------------------------------------------------------
+API_URL = "http://api:8000"
+API_KEY = "local-dev-api-key"
+PROJECT = "local-test-project"
 
-SAMPLE_SESSIONS = [
-    {
-        "session_id": "abc-123",
-        "timestamp": "2025-01-01T00:00:00Z",
-        "event_count": 3,
-        "file_count": 2,
-    },
-    {
-        "session_id": "def-456",
-        "timestamp": "2025-01-02T00:00:00Z",
-        "event_count": 1,
-        "file_count": 0,
-    },
-]
-
-SAMPLE_SESSION_DETAIL = {
-    "session_id": "abc-123",
-    "project": "test-proj",
-    "timestamp": "2025-01-01T00:00:00Z",
-    "events": [{"type": "log", "message": "hello"}],
-    "files": ["screenshot.png", "log.txt"],
+# Environment passed to every CLI invocation
+CLI_ENV = {
+    "ENDO_API_URL": API_URL,
+    "ENDO_API_KEY": API_KEY,
+    "ENDO_PROJECT": PROJECT,
 }
 
-# Shared options placed before the subcommand name
-SHARED_OPTS = ["--api-key", "test-key", "--project", "test-proj"]
+
+def _create_session() -> str:
+    """Create a real session and return its session_id string."""
+    resp = httpx.post(
+        f"{API_URL}/v1/sessions",
+        json={"project": PROJECT},
+        headers={"x-api-key": API_KEY},
+    )
+    resp.raise_for_status()
+    return str(resp.json()["session_id"])
 
 
-def _mock_client():
-    """Return a fresh MagicMock standing in for EndoscopeAPIClient."""
-    client = MagicMock()
-    client.list_sessions.return_value = SAMPLE_SESSIONS
-    client.get_session.return_value = SAMPLE_SESSION_DETAIL
-    client.delete_session.return_value = {"deleted": True}
-    client.pull_session.return_value = Path("/tmp/endoscope-out/abc-123")
-    client.prune_sessions.return_value = {"pruned": 5}
-    return client
+def _delete_session(session_id: str) -> None:
+    try:
+        httpx.delete(
+            f"{API_URL}/v1/sessions/{session_id}",
+            headers={"x-api-key": API_KEY},
+        )
+    except Exception:
+        pass
+
+
+@pytest.fixture()
+def session_id():
+    """Create a session, yield its ID, then clean up."""
+    sid = _create_session()
+    yield sid
+    _delete_session(sid)
 
 
 # ---------------------------------------------------------------------------
@@ -67,40 +62,28 @@ def _mock_client():
 # ---------------------------------------------------------------------------
 
 
-@patch("endoscope.cli.EndoscopeAPIClient")
-def test_list_shows_table(MockClient):
-    client = _mock_client()
-    MockClient.return_value = client
-
-    result = runner.invoke(app, [*SHARED_OPTS, "list"])
-    assert result.exit_code == 0
-    output = result.output
-    assert "abc-123" in output
-    assert "def-456" in output
-    assert "Sessions" in output
+def test_list_shows_table():
+    sid = _create_session()
+    try:
+        result = runner.invoke(app, ["list"], env=CLI_ENV)
+        assert result.exit_code == 0
+        assert sid in result.output
+        assert "Sessions" in result.output
+    finally:
+        _delete_session(sid)
 
 
-@patch("endoscope.cli.EndoscopeAPIClient")
-def test_list_json_flag(MockClient):
-    client = _mock_client()
-    MockClient.return_value = client
-
-    result = runner.invoke(app, [*SHARED_OPTS, "list", "--json"])
-    assert result.exit_code == 0
-    parsed = json.loads(result.output)
-    assert len(parsed) == 2
-    assert parsed[0]["session_id"] == "abc-123"
-
-
-@patch("endoscope.cli.EndoscopeAPIClient")
-def test_list_empty(MockClient):
-    client = _mock_client()
-    client.list_sessions.return_value = []
-    MockClient.return_value = client
-
-    result = runner.invoke(app, [*SHARED_OPTS, "list"])
-    assert result.exit_code == 0
-    assert "No sessions found" in result.output
+def test_list_json_flag():
+    sid = _create_session()
+    try:
+        result = runner.invoke(app, ["list", "--json"], env=CLI_ENV)
+        assert result.exit_code == 0
+        parsed = json.loads(result.output)
+        assert isinstance(parsed, list)
+        ids = [str(s["session_id"]) for s in parsed]
+        assert sid in ids
+    finally:
+        _delete_session(sid)
 
 
 # ---------------------------------------------------------------------------
@@ -108,30 +91,20 @@ def test_list_empty(MockClient):
 # ---------------------------------------------------------------------------
 
 
-@patch("endoscope.cli.EndoscopeAPIClient")
-def test_show_session_details(MockClient):
-    client = _mock_client()
-    MockClient.return_value = client
-
-    result = runner.invoke(app, [*SHARED_OPTS, "show", "abc-123"])
+def test_show_session_details(session_id):
+    result = runner.invoke(app, ["show", session_id], env=CLI_ENV)
     assert result.exit_code == 0
-    output = result.output
-    assert "abc-123" in output
-    assert "test-proj" in output
-    assert "Session abc-123" in output
-    assert "screenshot.png" in output
+    assert session_id in result.output
+    assert PROJECT in result.output
+    assert f"Session {session_id}" in result.output
 
 
-@patch("endoscope.cli.EndoscopeAPIClient")
-def test_show_json_flag(MockClient):
-    client = _mock_client()
-    MockClient.return_value = client
-
-    result = runner.invoke(app, [*SHARED_OPTS, "show", "abc-123", "--json"])
+def test_show_json_flag(session_id):
+    result = runner.invoke(app, ["show", session_id, "--json"], env=CLI_ENV)
     assert result.exit_code == 0
     parsed = json.loads(result.output)
-    assert parsed["session_id"] == "abc-123"
-    assert parsed["project"] == "test-proj"
+    assert str(parsed["session_id"]) == session_id
+    assert parsed["project"] == PROJECT
 
 
 # ---------------------------------------------------------------------------
@@ -139,51 +112,49 @@ def test_show_json_flag(MockClient):
 # ---------------------------------------------------------------------------
 
 
-@patch("endoscope.cli.EndoscopeAPIClient")
-def test_pull_single_session(MockClient):
-    client = _mock_client()
-    MockClient.return_value = client
-
-    result = runner.invoke(app, [*SHARED_OPTS, "pull", "abc-123"])
-    assert result.exit_code == 0
-    client.pull_session.assert_called_once_with(
-        "abc-123", Path("./endoscope-out/")
+def test_pull_single_session(tmp_path, session_id):
+    result = runner.invoke(
+        app, ["pull", session_id, "--out-dir", str(tmp_path)], env=CLI_ENV
     )
+    assert result.exit_code == 0
     assert "Pulled" in result.output
-    assert "abc-123" in result.output
+    assert session_id in result.output
+    assert (tmp_path / session_id).is_dir()
 
 
-@patch("endoscope.cli.EndoscopeAPIClient")
-def test_pull_all_sessions(MockClient):
-    client = _mock_client()
-    MockClient.return_value = client
-
-    result = runner.invoke(app, [*SHARED_OPTS, "pull", "--all"])
-    assert result.exit_code == 0
-    assert client.pull_session.call_count == len(SAMPLE_SESSIONS)
-
-
-@patch("endoscope.cli.EndoscopeAPIClient")
-def test_pull_last_n(MockClient):
-    client = _mock_client()
-    five_sessions = [
-        {**SAMPLE_SESSIONS[0], "session_id": f"sess-{i}"} for i in range(5)
-    ]
-    client.list_sessions.return_value = five_sessions
-    MockClient.return_value = client
-
-    result = runner.invoke(app, [*SHARED_OPTS, "pull", "--last", "2"])
-    assert result.exit_code == 0
-    assert client.pull_session.call_count == 2
+def test_pull_all_sessions(tmp_path):
+    sid1 = _create_session()
+    sid2 = _create_session()
+    try:
+        result = runner.invoke(
+            app, ["pull", "--all", "--out-dir", str(tmp_path)], env=CLI_ENV
+        )
+        assert result.exit_code == 0
+        assert sid1 in result.output
+        assert sid2 in result.output
+        assert (tmp_path / sid1).is_dir()
+        assert (tmp_path / sid2).is_dir()
+    finally:
+        _delete_session(sid1)
+        _delete_session(sid2)
 
 
-@patch("endoscope.cli.EndoscopeAPIClient")
-def test_pull_no_args_exits(MockClient):
-    """pull without session_id and without --all/--last should exit 1."""
-    client = _mock_client()
-    MockClient.return_value = client
+def test_pull_last_n(tmp_path):
+    sids = [_create_session() for _ in range(3)]
+    try:
+        result = runner.invoke(
+            app, ["pull", "--last", "2", "--out-dir", str(tmp_path)], env=CLI_ENV
+        )
+        assert result.exit_code == 0
+        downloaded = [d for d in tmp_path.iterdir() if d.is_dir()]
+        assert len(downloaded) == 2
+    finally:
+        for sid in sids:
+            _delete_session(sid)
 
-    result = runner.invoke(app, [*SHARED_OPTS, "pull"])
+
+def test_pull_no_args_exits():
+    result = runner.invoke(app, ["pull"], env=CLI_ENV)
     assert result.exit_code == 1
     assert "Provide a session ID, or use --all / --last" in result.output
 
@@ -193,28 +164,17 @@ def test_pull_no_args_exits(MockClient):
 # ---------------------------------------------------------------------------
 
 
-@patch("endoscope.cli.EndoscopeAPIClient")
-def test_delete_with_force(MockClient):
-    client = _mock_client()
-    MockClient.return_value = client
-
-    result = runner.invoke(
-        app, [*SHARED_OPTS, "delete", "abc-123", "--force"]
-    )
+def test_delete_with_force():
+    sid = _create_session()
+    result = runner.invoke(app, ["delete", sid, "--force"], env=CLI_ENV)
     assert result.exit_code == 0
-    client.delete_session.assert_called_once_with("abc-123")
     assert "Deleted session" in result.output
 
 
-@patch("endoscope.cli.typer.confirm", return_value=True)
-@patch("endoscope.cli.EndoscopeAPIClient")
-def test_delete_requires_confirmation(MockClient, _mock_confirm):
-    client = _mock_client()
-    MockClient.return_value = client
-
-    result = runner.invoke(app, [*SHARED_OPTS, "delete", "abc-123"])
+def test_delete_requires_confirmation():
+    sid = _create_session()
+    result = runner.invoke(app, ["delete", sid], env=CLI_ENV, input="y\n")
     assert result.exit_code == 0
-    client.delete_session.assert_called_once_with("abc-123")
     assert "Deleted session" in result.output
 
 
@@ -223,40 +183,22 @@ def test_delete_requires_confirmation(MockClient, _mock_confirm):
 # ---------------------------------------------------------------------------
 
 
-@patch("endoscope.cli.EndoscopeAPIClient")
-def test_prune_older_than(MockClient):
-    client = _mock_client()
-    MockClient.return_value = client
-
+def test_prune_older_than():
     result = runner.invoke(
-        app, [*SHARED_OPTS, "prune", "--older-than", "7d", "--force"]
+        app, ["prune", "--older-than", "7d", "--force"], env=CLI_ENV
     )
     assert result.exit_code == 0
-    client.prune_sessions.assert_called_once_with(
-        older_than="7d", all=False
-    )
     assert "Pruned" in result.output
 
 
-@patch("endoscope.cli.EndoscopeAPIClient")
-def test_prune_all(MockClient):
-    client = _mock_client()
-    MockClient.return_value = client
-
-    result = runner.invoke(app, [*SHARED_OPTS, "prune", "--all", "--force"])
+def test_prune_all():
+    result = runner.invoke(app, ["prune", "--all", "--force"], env=CLI_ENV)
     assert result.exit_code == 0
-    client.prune_sessions.assert_called_once_with(
-        older_than=None, all=True
-    )
+    assert "Pruned" in result.output
 
 
-@patch("endoscope.cli.EndoscopeAPIClient")
-def test_prune_requires_flag(MockClient):
-    """prune without --older-than or --all should exit 1."""
-    client = _mock_client()
-    MockClient.return_value = client
-
-    result = runner.invoke(app, [*SHARED_OPTS, "prune"])
+def test_prune_requires_flag():
+    result = runner.invoke(app, ["prune"], env=CLI_ENV)
     assert result.exit_code == 1
     assert "Provide --older-than or --all" in result.output
 
@@ -272,7 +214,6 @@ def test_api_key_generates_key():
     key = result.output.strip()
     assert len(key) > 0
     import re
-
     assert re.match(r"^[A-Za-z0-9_\-+=]+$", key), f"Key not url-safe: {key}"
 
 

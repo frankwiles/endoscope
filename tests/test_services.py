@@ -1,12 +1,25 @@
-"""Unit tests for the session service layer."""
+"""Integration tests for the session service layer.
+
+All tests run against real S3Storage backed by the Docker Compose RustFS
+instance.  Each test gets an isolated project name (UUID-based) so data
+never collides between tests.
+"""
+
+from __future__ import annotations
 
 from datetime import UTC, datetime, timedelta
-from unittest.mock import AsyncMock
 from uuid import UUID
 
+import httpx
 import pytest
 
-from endoscope.services import Session, SessionCreateRequest, SessionService, parse_session_key
+from endoscope.services import (
+    Session,
+    SessionCreateRequest,
+    SessionService,
+    parse_session_key,
+)
+from endoscope.storage import S3Storage
 
 
 def _make_session(**overrides) -> Session:
@@ -28,8 +41,9 @@ def _make_session(**overrides) -> Session:
         files=defaults["files"],
     )
 
+
 # ---------------------------------------------------------------------------
-# Session domain model
+# Session domain model (pure unit tests — no storage needed)
 # ---------------------------------------------------------------------------
 
 
@@ -69,30 +83,28 @@ def test_session_serialization_roundtrip():
 
 
 @pytest.mark.asyncio
-async def test_create_session_writes_metadata_to_storage():
-    storage = AsyncMock()
-    svc = SessionService(storage=storage)
-
-    req = SessionCreateRequest(project="my-proj", metadata={"tier": "prod"})
+async def test_create_session_writes_metadata_to_storage(svc: SessionService, project: str):
+    req = SessionCreateRequest(project=project, metadata={"tier": "prod"})
     session = await svc.create_session(req)
 
-    assert session.project == "my-proj"
+    assert session.project == project
     assert session.metadata == {"tier": "prod"}
-    storage.put_json.assert_awaited_once()
-    call_key = storage.put_json.call_args[1]["key"]
-    assert call_key.startswith("my-proj/")
-    assert call_key.endswith("/metadata.json")
+
+    # Verify it was actually written to S3
+    fetched = await svc.get_session(session.session_id, project)
+    assert fetched is not None
+    assert fetched.session_id == session.session_id
+    assert fetched.metadata == {"tier": "prod"}
 
 
 @pytest.mark.asyncio
-async def test_create_session_without_metadata():
-    storage = AsyncMock()
-    svc = SessionService(storage=storage)
-
-    session = await svc.create_session(SessionCreateRequest(project="x"))
+async def test_create_session_without_metadata(svc: SessionService, project: str):
+    session = await svc.create_session(SessionCreateRequest(project=project))
     assert session.metadata is None
-    data = storage.put_json.call_args[1]["data"]
-    assert data["metadata"] is None
+
+    fetched = await svc.get_session(session.session_id, project)
+    assert fetched is not None
+    assert fetched.metadata is None
 
 
 # ---------------------------------------------------------------------------
@@ -101,28 +113,19 @@ async def test_create_session_without_metadata():
 
 
 @pytest.mark.asyncio
-async def test_get_session_found():
-    stored = _make_session()
-    storage = AsyncMock()
-    storage.find_key_by_suffix.return_value = stored.metadata_key
-    storage.get_json.return_value = stored.model_dump(mode="json")
-
-    svc = SessionService(storage=storage)
-    result = await svc.get_session(stored.session_id, "test-project")
+async def test_get_session_found(svc: SessionService, project: str):
+    created = await svc.create_session(SessionCreateRequest(project=project))
+    result = await svc.get_session(created.session_id, project)
 
     assert result is not None
-    assert result.session_id == stored.session_id
+    assert result.session_id == created.session_id
+    assert result.project == project
 
 
 @pytest.mark.asyncio
-async def test_get_session_not_found():
-    storage = AsyncMock()
-    storage.find_key_by_suffix.return_value = None
-
-    svc = SessionService(storage=storage)
-    result = await svc.get_session(UUID("00000000-0000-0000-0000-000000000000"), "nope")
+async def test_get_session_not_found(svc: SessionService, project: str):
+    result = await svc.get_session(UUID("00000000-0000-0000-0000-000000000000"), project)
     assert result is None
-
 
 
 # ---------------------------------------------------------------------------
@@ -131,58 +134,38 @@ async def test_get_session_not_found():
 
 
 @pytest.mark.asyncio
-async def test_list_sessions_parses_key_paths():
-    """list_sessions parses S3 key paths and returns SessionSummary objects."""
-    storage = AsyncMock()
-    svc = SessionService(storage=storage)
-
-    # Two valid metadata keys with different dates
-    key_a = (
-        "my-proj/2026/03/28/"
-        "20260328T120000Z--12345678-1234-1234-1234-123456789abc/"
-        "metadata.json"
+async def test_list_sessions_sorted_most_recent_first(svc: SessionService, storage: S3Storage, project: str):
+    """list_sessions returns SessionSummary objects sorted most-recent first
+    with accurate event and file counts. Stray keys are ignored."""
+    # Write two sessions with controlled timestamps directly to S3
+    session_a = Session(
+        project=project,
+        timestamp=datetime(2026, 3, 28, 12, 0, 0, tzinfo=UTC),
+        events=[{"type": "log"}, {"type": "error"}],
+        files=["dump.bin"],
     )
-    key_b = (
-        "my-proj/2026/03/29/"
-        "20260329T083000Z--aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee/"
-        "metadata.json"
+    session_b = Session(
+        project=project,
+        timestamp=datetime(2026, 3, 29, 8, 30, 0, tzinfo=UTC),
     )
-    # A key that does NOT match the expected pattern
-    key_bad = "my-proj/2026/03/28/stray-file.txt"
+    await storage.put_json(key=session_a.metadata_key, data=session_a.model_dump(mode="json"))
+    await storage.put_json(key=session_b.metadata_key, data=session_b.model_dump(mode="json"))
 
-    storage.list_keys.return_value = [key_a, key_b, key_bad]
+    # Write a stray key that doesn't match the metadata.json pattern — should be ignored
+    await storage.put_json(key=f"{project}/2026/03/28/stray-file.txt", data={})
+    # Write a key that ends in /metadata.json but has a non-parseable path
+    await storage.put_json(key=f"{project}/bad-path/metadata.json", data={})
 
-    def _get_json(key):
-        if key == key_a:
-            return {
-                "session_id": "12345678-1234-1234-1234-123456789abc",
-                "timestamp": "2026-03-28T12:00:00+00:00",
-                "project": "my-proj",
-                "events": [{"type": "log"}, {"type": "error"}],
-                "files": ["dump.bin"],
-            }
-        if key == key_b:
-            return {
-                "session_id": "aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee",
-                "timestamp": "2026-03-29T08:30:00+00:00",
-                "project": "my-proj",
-                "events": [],
-                "files": [],
-            }
-        return None
+    summaries = await svc.list_sessions(project)
 
-    storage.get_json.side_effect = _get_json
-
-    summaries = await svc.list_sessions("my-proj")
-
-    # Most recent first
     assert len(summaries) == 2
-    assert summaries[0].session_id == UUID("aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee")
+    # Most recent first
+    assert summaries[0].session_id == session_b.session_id
     assert summaries[0].timestamp == datetime(2026, 3, 29, 8, 30, 0, tzinfo=UTC)
     assert summaries[0].event_count == 0
     assert summaries[0].file_count == 0
 
-    assert summaries[1].session_id == UUID("12345678-1234-1234-1234-123456789abc")
+    assert summaries[1].session_id == session_a.session_id
     assert summaries[1].timestamp == datetime(2026, 3, 28, 12, 0, 0, tzinfo=UTC)
     assert summaries[1].event_count == 2
     assert summaries[1].file_count == 1
@@ -194,41 +177,33 @@ async def test_list_sessions_parses_key_paths():
 
 
 @pytest.mark.asyncio
-async def test_delete_session_removes_all_objects():
-    """delete_session collects all keys under the session prefix and deletes them."""
-    storage = AsyncMock()
-    svc = SessionService(storage=storage)
+async def test_delete_session_removes_all_objects(svc: SessionService, storage: S3Storage, project: str):
+    """delete_session removes all S3 objects under the session prefix."""
+    session = await svc.create_session(SessionCreateRequest(project=project))
 
-    session = _make_session()
-    # get_session will be called internally — wire find_key_by_suffix + get_json
-    storage.find_key_by_suffix.return_value = session.metadata_key
-    storage.get_json.return_value = session.model_dump(mode="json")
+    # Register a file and upload bytes so there's more than just metadata.json
+    result = await svc.add_file(session.session_id, project, "dump.bin")
+    assert result is not None
+    _, upload_url = result
+    httpx.put(upload_url, content=b"\x00\x01\x02\x03")
 
-    object_keys = [
-        f"{session.storage_prefix}/metadata.json",
-        f"{session.storage_prefix}/files/dump.bin",
-        f"{session.storage_prefix}/events/0.json",
-    ]
-    storage.list_keys.return_value = object_keys
-
-    deleted = await svc.delete_session(session.session_id, "test-project")
-
+    # Delete the session
+    deleted = await svc.delete_session(session.session_id, project)
     assert deleted is True
-    storage.delete_objects.assert_awaited_once_with(object_keys)
+
+    # Verify all objects under the session prefix are gone
+    remaining_keys = await storage.list_keys(prefix=f"{session.storage_prefix}/")
+    assert remaining_keys == []
+
+    # Verify session is no longer findable
+    found = await svc.get_session(session.session_id, project)
+    assert found is None
 
 
 @pytest.mark.asyncio
-async def test_delete_session_returns_false_when_not_found():
-    """delete_session returns False when the session doesn't exist."""
-    storage = AsyncMock()
-    storage.find_key_by_suffix.return_value = None
-    svc = SessionService(storage=storage)
-
-    deleted = await svc.delete_session(
-        UUID("00000000-0000-0000-0000-000000000000"), "nope"
-    )
+async def test_delete_session_returns_false_when_not_found(svc: SessionService, project: str):
+    deleted = await svc.delete_session(UUID("00000000-0000-0000-0000-000000000000"), project)
     assert deleted is False
-    storage.delete_objects.assert_not_awaited()
 
 
 # ---------------------------------------------------------------------------
@@ -237,73 +212,41 @@ async def test_delete_session_returns_false_when_not_found():
 
 
 @pytest.mark.asyncio
-async def test_prune_sessions_by_age():
+async def test_prune_sessions_by_age(svc: SessionService, storage: S3Storage, project: str):
     """prune_sessions with older_than only deletes sessions past the cutoff."""
-    storage = AsyncMock()
-    svc = SessionService(storage=storage)
-
-    # One old session (20 days ago) and one recent (1 day ago)
-    old_ts = datetime(2026, 3, 9, 10, 0, 0, tzinfo=UTC)
-    recent_ts = datetime(2026, 3, 28, 10, 0, 0, tzinfo=UTC)
-    old_uuid = UUID("11111111-0000-0000-0000-000000000000")
-    recent_uuid = UUID("22222222-0000-0000-0000-000000000000")
-
-    old_key = (
-        f"my-proj/{old_ts:%Y/%m/%d}/{old_ts:%Y%m%dT%H%M%SZ}--{old_uuid}/metadata.json"
+    # Write an old session (20 days ago) directly to S3
+    old_session = Session(
+        project=project,
+        timestamp=datetime.now(UTC) - timedelta(days=20),
     )
-    recent_key = (
-        f"my-proj/{recent_ts:%Y/%m/%d}/{recent_ts:%Y%m%dT%H%M%SZ}--{recent_uuid}/metadata.json"
-    )
+    await storage.put_json(key=old_session.metadata_key, data=old_session.model_dump(mode="json"))
 
-    storage.list_keys.return_value = [old_key, recent_key]
+    # Create a recent session via the service
+    recent_session = await svc.create_session(SessionCreateRequest(project=project))
 
-    # When prune collects keys under the old prefix, return some objects
-    old_prefix = old_key.rsplit("/metadata.json", 1)[0]
-    old_objects = [
-        f"{old_prefix}/metadata.json",
-        f"{old_prefix}/files/heap.bin",
-    ]
-
-    # list_keys is called twice: first for discovery, then per-prefix.
-    # First call returns metadata keys, second returns objects under old prefix.
-    storage.list_keys.side_effect = [[old_key, recent_key], old_objects]
-
-    count = await svc.prune_sessions("my-proj", older_than=timedelta(days=7))
+    count = await svc.prune_sessions(project, older_than=timedelta(days=7))
 
     assert count == 1
-    storage.delete_objects.assert_awaited_once_with(old_objects)
+
+    # Old session should be gone, recent session should remain
+    remaining = await svc.list_sessions(project)
+    assert len(remaining) == 1
+    assert remaining[0].session_id == recent_session.session_id
 
 
 @pytest.mark.asyncio
-async def test_prune_all_sessions():
+async def test_prune_all_sessions(svc: SessionService, storage: S3Storage, project: str):
     """prune_sessions with all=True deletes every session for the project."""
-    storage = AsyncMock()
-    svc = SessionService(storage=storage)
+    session_a = Session(project=project, timestamp=datetime(2026, 3, 27, 10, 0, 0, tzinfo=UTC))
+    session_b = Session(project=project, timestamp=datetime(2026, 3, 28, 10, 0, 0, tzinfo=UTC))
+    await storage.put_json(key=session_a.metadata_key, data=session_a.model_dump(mode="json"))
+    await storage.put_json(key=session_b.metadata_key, data=session_b.model_dump(mode="json"))
 
-    ts_a = datetime(2026, 3, 27, 10, 0, 0, tzinfo=UTC)
-    ts_b = datetime(2026, 3, 28, 10, 0, 0, tzinfo=UTC)
-    uuid_a = UUID("aaaaaaaa-0000-0000-0000-000000000000")
-    uuid_b = UUID("bbbbbbbb-0000-0000-0000-000000000000")
-
-    key_a = f"my-proj/{ts_a:%Y/%m/%d}/{ts_a:%Y%m%dT%H%M%SZ}--{uuid_a}/metadata.json"
-    key_b = f"my-proj/{ts_b:%Y/%m/%d}/{ts_b:%Y%m%dT%H%M%SZ}--{uuid_b}/metadata.json"
-
-    prefix_a = key_a.rsplit("/metadata.json", 1)[0]
-    prefix_b = key_b.rsplit("/metadata.json", 1)[0]
-
-    objs_a = [f"{prefix_a}/metadata.json"]
-    objs_b = [f"{prefix_b}/metadata.json", f"{prefix_b}/files/core.bin"]
-
-    storage.list_keys.side_effect = [
-        [key_a, key_b],  # discovery pass
-        objs_a,            # prefix-a objects
-        objs_b,            # prefix-b objects
-    ]
-
-    count = await svc.prune_sessions("my-proj", all=True)
+    count = await svc.prune_sessions(project, all=True)
 
     assert count == 2
-    storage.delete_objects.assert_awaited_once_with(objs_a + objs_b)
+    remaining = await svc.list_sessions(project)
+    assert len(remaining) == 0
 
 
 # ---------------------------------------------------------------------------
@@ -312,73 +255,60 @@ async def test_prune_all_sessions():
 
 
 @pytest.mark.asyncio
-async def test_get_file_bytes_found():
-    """get_file_bytes returns bytes when the file exists in the session."""
-    storage = AsyncMock()
-    svc = SessionService(storage=storage)
+async def test_get_file_bytes_found(svc: SessionService, project: str):
+    """get_file_bytes returns bytes when the file has been uploaded."""
+    session = await svc.create_session(SessionCreateRequest(project=project))
 
-    session = _make_session(files=["dump.bin", "trace.log"])
-    storage.find_key_by_suffix.return_value = session.metadata_key
-    storage.get_json.return_value = session.model_dump(mode="json")
-    storage.get_object_bytes.return_value = b"\x00\x01\x02\x03"
+    result = await svc.add_file(session.session_id, project, "dump.bin")
+    assert result is not None
+    _, upload_url = result
 
-    result = await svc.get_file_bytes(session.session_id, "test-project", "dump.bin")
+    file_bytes = b"\x00\x01\x02\x03"
+    httpx.put(upload_url, content=file_bytes)
 
-    assert result == b"\x00\x01\x02\x03"
-    expected_key = f"{session.files_prefix}dump.bin"
-    storage.get_object_bytes.assert_awaited_once_with(expected_key)
+    fetched = await svc.get_file_bytes(session.session_id, project, "dump.bin")
+    assert fetched == file_bytes
 
 
 @pytest.mark.asyncio
-async def test_get_file_bytes_not_in_session():
+async def test_get_file_bytes_not_in_session(svc: SessionService, project: str):
     """get_file_bytes returns None when the filename is not in session.files."""
-    storage = AsyncMock()
-    svc = SessionService(storage=storage)
+    # Create session with "dump.bin" registered but not "nope.bin"
+    session = await svc.create_session(SessionCreateRequest(project=project))
+    await svc.add_file(session.session_id, project, "dump.bin")
 
-    session = _make_session(files=["dump.bin"])
-    storage.find_key_by_suffix.return_value = session.metadata_key
-    storage.get_json.return_value = session.model_dump(mode="json")
-
-    result = await svc.get_file_bytes(session.session_id, "test-project", "nope.bin")
-
+    result = await svc.get_file_bytes(session.session_id, project, "nope.bin")
     assert result is None
-    storage.get_object_bytes.assert_not_awaited()
 
 
 @pytest.mark.asyncio
-async def test_get_file_bytes_session_not_found():
+async def test_get_file_bytes_session_not_found(svc: SessionService, project: str):
     """get_file_bytes returns None when the session doesn't exist."""
-    storage = AsyncMock()
-    storage.find_key_by_suffix.return_value = None
-    svc = SessionService(storage=storage)
-
     result = await svc.get_file_bytes(
-        UUID("00000000-0000-0000-0000-000000000000"), "nope", "file.bin"
+        UUID("00000000-0000-0000-0000-000000000000"), project, "file.bin"
     )
     assert result is None
-    storage.get_object_bytes.assert_not_awaited()
 
 
 # ---------------------------------------------------------------------------
-# Fix #3: Duplicate filename deduplication
+# Duplicate filename deduplication
 # ---------------------------------------------------------------------------
 
 
 @pytest.mark.asyncio
-async def test_add_file_deduplicates_filename():
+async def test_add_file_deduplicates_filename(svc: SessionService, project: str):
     """When the same filename already exists, add_file appends a random hash."""
-    storage = AsyncMock()
-    svc = SessionService(storage=storage)
+    session = await svc.create_session(SessionCreateRequest(project=project))
 
-    session = _make_session(files=["report.csv"])
-    storage.find_key_by_suffix.return_value = session.metadata_key
-    storage.get_json.return_value = session.model_dump(mode="json")
-    storage.generate_presigned_url.return_value = "https://s3.example.com/upload"
+    # Register "report.csv" once
+    result1 = await svc.add_file(session.session_id, project, "report.csv")
+    assert result1 is not None
 
-    result = await svc.add_file(session.session_id, "test-project", "report.csv")
-    assert result is not None
-    updated_session, url = result
-    # The stored filename should NOT be "report.csv" — it should have a hash suffix
+    # Register "report.csv" again — should be deduplicated
+    result2 = await svc.add_file(session.session_id, project, "report.csv")
+    assert result2 is not None
+    updated_session, _ = result2
+
     stored_name = updated_session.files[-1]
     assert stored_name != "report.csv"
     assert stored_name.startswith("report-")
@@ -388,37 +318,28 @@ async def test_add_file_deduplicates_filename():
 
 
 # ---------------------------------------------------------------------------
-# Fix #4: Empty filename rejection
+# Empty filename rejection
 # ---------------------------------------------------------------------------
 
 
 @pytest.mark.asyncio
-async def test_add_file_rejects_empty_filename():
-    """add_file raises ValueError when filename is empty."""
-    storage = AsyncMock()
-    svc = SessionService(storage=storage)
-
+async def test_add_file_rejects_empty_filename(svc: SessionService):
     with pytest.raises(ValueError, match="filename must not be empty"):
         await svc.add_file(UUID("12345678-1234-1234-1234-123456789abc"), "test-project", "")
 
 
 @pytest.mark.asyncio
-async def test_add_file_rejects_whitespace_filename():
-    """add_file raises ValueError when filename is only whitespace."""
-    storage = AsyncMock()
-    svc = SessionService(storage=storage)
-
+async def test_add_file_rejects_whitespace_filename(svc: SessionService):
     with pytest.raises(ValueError, match="filename must not be empty"):
         await svc.add_file(UUID("12345678-1234-1234-1234-123456789abc"), "test-project", "  ")
 
 
 # ---------------------------------------------------------------------------
-# Fix #8: Compact timestamp format and backward-compatible parsing
+# Compact timestamp format and backward-compatible parsing
 # ---------------------------------------------------------------------------
 
 
 def test_parse_session_key_compact_timestamp():
-    """parse_session_key handles the compact timestamp format."""
     key = "my-proj/2026/03/28/20260328T120000Z--12345678-1234-1234-1234-123456789abc/metadata.json"
     result = parse_session_key(key)
     assert result is not None
@@ -428,7 +349,6 @@ def test_parse_session_key_compact_timestamp():
 
 
 def test_parse_session_key_legacy_timestamp():
-    """parse_session_key still handles the old ISO format for backward compat."""
     key = (
         "my-proj/2026/03/28/"
         "2026-03-28T12:00:00+00:00--12345678-1234-1234-1234-123456789abc/"
