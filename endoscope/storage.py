@@ -6,8 +6,13 @@ from typing import Any
 import aioboto3
 import structlog
 from botocore.config import Config as BotoConfig
+from botocore.exceptions import ClientError
 
 log = structlog.get_logger()
+
+
+class StorageError(Exception):
+    """Infrastructure error from S3 — not a missing-key condition."""
 
 
 class S3Storage:
@@ -41,12 +46,15 @@ class S3Storage:
                 resp = await s3.get_object(Bucket=self._bucket, Key=key)
                 body = await resp["Body"].read()
                 return json.loads(body)
-            except s3.exceptions.NoSuchKey:
-                return None
-            except Exception:
-                # ClientError from a 404 also lands here
-                log.warning("s3.get.miss", key=key)
-                return None
+            except ClientError as exc:
+                status = exc.response.get("ResponseMetadata", {}).get("HTTPStatusCode", 0)
+                if status == 404:
+                    return None
+                log.warning("s3.get.error", key=key, error=str(exc))
+                raise StorageError(f"S3 error fetching {key!r}: {exc}") from exc
+            except Exception as exc:
+                log.warning("s3.get.error", key=key, error=str(exc))
+                raise StorageError(f"S3 error fetching {key!r}: {exc}") from exc
 
     async def find_key_by_suffix(self, prefix: str, suffix: str) -> str | None:
         """List objects under *prefix* and return the first key ending with *suffix*."""
@@ -59,8 +67,9 @@ class S3Storage:
                     for obj in page.get("Contents", []):
                         if obj["Key"].endswith(suffix):
                             return obj["Key"]
-        except Exception:
-            log.warning("s3.list.miss", prefix=prefix)
+        except Exception as exc:
+            log.warning("s3.list.error", prefix=prefix, error=str(exc))
+            raise StorageError(f"S3 error listing {prefix!r}: {exc}") from exc
         return None
 
     def _client(self):
@@ -76,27 +85,43 @@ class S3Storage:
     async def list_keys(self, prefix: str) -> list[str]:
         """List all object keys under *prefix*.
 
-        Returns a list of keys (str)."""
+        Returns a list of keys (str).
+        """
         keys: list[str] = []
-        async with self._client() as s3:
-            paginator = s3.get_paginator("list_objects_v2")
-            async for page in paginator.paginate(Bucket=self._bucket, Prefix=prefix):
-                for obj in page.get("Contents", []):
-                    keys.append(obj["Key"])
+        try:
+            async with self._client() as s3:
+                paginator = s3.get_paginator("list_objects_v2")
+                async for page in paginator.paginate(Bucket=self._bucket, Prefix=prefix):
+                    for obj in page.get("Contents", []):
+                        keys.append(obj["Key"])
+        except Exception as exc:
+            log.warning("s3.list.error", prefix=prefix, error=str(exc))
+            raise StorageError(f"S3 error listing {prefix!r}: {exc}") from exc
         return keys
 
 
+
     async def delete_objects(self, keys: list[str]) -> None:
-        """Batch delete S3 objects, chunking at the 1000-object S3 limit."""
+        """Batch delete S3 objects, chunking at the 1000-object S3 limit.
+
+        Raises StorageError if any objects fail to delete.
+        """
         if not keys:
             return
         async with self._client() as s3:
             for i in range(0, len(keys), 1000):
                 chunk = keys[i : i + 1000]
-                await s3.delete_objects(
+                resp = await s3.delete_objects(
                     Bucket=self._bucket,
                     Delete={"Objects": [{"Key": k} for k in chunk]},
                 )
+                errors = resp.get("Errors", [])
+                if errors:
+                    failed_keys = [e["Key"] for e in errors]
+                    log.warning("s3.delete.partial", failed=failed_keys)
+                    raise StorageError(
+                        f"S3 partial delete failure for keys: {failed_keys}"
+                    )
                 log.debug("s3.delete", count=len(chunk))
 
     async def get_object_bytes(self, key: str) -> bytes | None:
@@ -107,11 +132,15 @@ class S3Storage:
                 body = await resp["Body"].read()
                 log.debug("s3.get_bytes", key=key, size=len(body))
                 return body
-            except s3.exceptions.NoSuchKey:
-                return None
-            except Exception:
-                log.warning("s3.get_bytes.miss", key=key)
-                return None
+            except ClientError as exc:
+                status = exc.response.get("ResponseMetadata", {}).get("HTTPStatusCode", 0)
+                if status == 404:
+                    return None
+                log.warning("s3.get_bytes.error", key=key, error=str(exc))
+                raise StorageError(f"S3 error fetching {key!r}: {exc}") from exc
+            except Exception as exc:
+                log.warning("s3.get_bytes.error", key=key, error=str(exc))
+                raise StorageError(f"S3 error fetching {key!r}: {exc}") from exc
 
     async def list_objects(self, prefix: str) -> list[dict]:
         """List all objects under *prefix* with key, size, and last_modified."""

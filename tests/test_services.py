@@ -6,7 +6,7 @@ from uuid import UUID
 
 import pytest
 
-from endoscope.services import Session, SessionCreateRequest, SessionService
+from endoscope.services import Session, SessionCreateRequest, SessionService, parse_session_key
 
 
 def _make_session(**overrides) -> Session:
@@ -35,7 +35,7 @@ def _make_session(**overrides) -> Session:
 
 def test_storage_key_format():
     s = _make_session()
-    assert s.storage_prefix == "test-project/2026/03/28/2026-03-28T12:00:00+00:00--12345678-1234-1234-1234-123456789abc"
+    assert s.storage_prefix == "test-project/2026/03/28/20260328T120000Z--12345678-1234-1234-1234-123456789abc"
     assert s.metadata_key.endswith("/metadata.json")
 
 
@@ -139,12 +139,12 @@ async def test_list_sessions_parses_key_paths():
     # Two valid metadata keys with different dates
     key_a = (
         "my-proj/2026/03/28/"
-        "2026-03-28T12:00:00+00:00--12345678-1234-1234-1234-123456789abc/"
+        "20260328T120000Z--12345678-1234-1234-1234-123456789abc/"
         "metadata.json"
     )
     key_b = (
         "my-proj/2026/03/29/"
-        "2026-03-29T08:30:00+00:00--aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee/"
+        "20260329T083000Z--aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee/"
         "metadata.json"
     )
     # A key that does NOT match the expected pattern
@@ -249,10 +249,10 @@ async def test_prune_sessions_by_age():
     recent_uuid = UUID("22222222-0000-0000-0000-000000000000")
 
     old_key = (
-        f"my-proj/{old_ts:%Y/%m/%d}/{old_ts.isoformat()}--{old_uuid}/metadata.json"
+        f"my-proj/{old_ts:%Y/%m/%d}/{old_ts:%Y%m%dT%H%M%SZ}--{old_uuid}/metadata.json"
     )
     recent_key = (
-        f"my-proj/{recent_ts:%Y/%m/%d}/{recent_ts.isoformat()}--{recent_uuid}/metadata.json"
+        f"my-proj/{recent_ts:%Y/%m/%d}/{recent_ts:%Y%m%dT%H%M%SZ}--{recent_uuid}/metadata.json"
     )
 
     storage.list_keys.return_value = [old_key, recent_key]
@@ -285,8 +285,8 @@ async def test_prune_all_sessions():
     uuid_a = UUID("aaaaaaaa-0000-0000-0000-000000000000")
     uuid_b = UUID("bbbbbbbb-0000-0000-0000-000000000000")
 
-    key_a = f"my-proj/{ts_a:%Y/%m/%d}/{ts_a.isoformat()}--{uuid_a}/metadata.json"
-    key_b = f"my-proj/{ts_b:%Y/%m/%d}/{ts_b.isoformat()}--{uuid_b}/metadata.json"
+    key_a = f"my-proj/{ts_a:%Y/%m/%d}/{ts_a:%Y%m%dT%H%M%SZ}--{uuid_a}/metadata.json"
+    key_b = f"my-proj/{ts_b:%Y/%m/%d}/{ts_b:%Y%m%dT%H%M%SZ}--{uuid_b}/metadata.json"
 
     prefix_a = key_a.rsplit("/metadata.json", 1)[0]
     prefix_b = key_b.rsplit("/metadata.json", 1)[0]
@@ -357,3 +357,85 @@ async def test_get_file_bytes_session_not_found():
     )
     assert result is None
     storage.get_object_bytes.assert_not_awaited()
+
+
+# ---------------------------------------------------------------------------
+# Fix #3: Duplicate filename deduplication
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_add_file_deduplicates_filename():
+    """When the same filename already exists, add_file appends a random hash."""
+    storage = AsyncMock()
+    svc = SessionService(storage=storage)
+
+    session = _make_session(files=["report.csv"])
+    storage.find_key_by_suffix.return_value = session.metadata_key
+    storage.get_json.return_value = session.model_dump(mode="json")
+    storage.generate_presigned_url.return_value = "https://s3.example.com/upload"
+
+    result = await svc.add_file(session.session_id, "test-project", "report.csv")
+    assert result is not None
+    updated_session, url = result
+    # The stored filename should NOT be "report.csv" — it should have a hash suffix
+    stored_name = updated_session.files[-1]
+    assert stored_name != "report.csv"
+    assert stored_name.startswith("report-")
+    assert stored_name.endswith(".csv")
+    # Length: "report-" (7) + 4 hex chars + ".csv" (4) = 15
+    assert len(stored_name) == 15
+
+
+# ---------------------------------------------------------------------------
+# Fix #4: Empty filename rejection
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_add_file_rejects_empty_filename():
+    """add_file raises ValueError when filename is empty."""
+    storage = AsyncMock()
+    svc = SessionService(storage=storage)
+
+    with pytest.raises(ValueError, match="filename must not be empty"):
+        await svc.add_file(UUID("12345678-1234-1234-1234-123456789abc"), "test-project", "")
+
+
+@pytest.mark.asyncio
+async def test_add_file_rejects_whitespace_filename():
+    """add_file raises ValueError when filename is only whitespace."""
+    storage = AsyncMock()
+    svc = SessionService(storage=storage)
+
+    with pytest.raises(ValueError, match="filename must not be empty"):
+        await svc.add_file(UUID("12345678-1234-1234-1234-123456789abc"), "test-project", "  ")
+
+
+# ---------------------------------------------------------------------------
+# Fix #8: Compact timestamp format and backward-compatible parsing
+# ---------------------------------------------------------------------------
+
+
+def test_parse_session_key_compact_timestamp():
+    """parse_session_key handles the compact timestamp format."""
+    key = "my-proj/2026/03/28/20260328T120000Z--12345678-1234-1234-1234-123456789abc/metadata.json"
+    result = parse_session_key(key)
+    assert result is not None
+    assert result["session_id"] == UUID("12345678-1234-1234-1234-123456789abc")
+    assert result["timestamp"] == datetime(2026, 3, 28, 12, 0, 0, tzinfo=UTC)
+    assert result["project"] == "my-proj"
+
+
+def test_parse_session_key_legacy_timestamp():
+    """parse_session_key still handles the old ISO format for backward compat."""
+    key = (
+        "my-proj/2026/03/28/"
+        "2026-03-28T12:00:00+00:00--12345678-1234-1234-1234-123456789abc/"
+        "metadata.json"
+    )
+    result = parse_session_key(key)
+    assert result is not None
+    assert result["session_id"] == UUID("12345678-1234-1234-1234-123456789abc")
+    assert result["timestamp"] == datetime(2026, 3, 28, 12, 0, 0, tzinfo=UTC)
+    assert result["project"] == "my-proj"

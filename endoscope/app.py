@@ -26,6 +26,7 @@ from .services import (
     make_session_service,
     parse_duration,
 )
+from .storage import StorageError
 
 
 
@@ -185,7 +186,10 @@ async def add_file(request: Request):
         file = form.get("file")
         filename = getattr(file, "filename", "upload.bin")
 
-    result = await svc.add_file(session_id, filename=filename)
+    try:
+        result = await svc.add_file(session_id, filename=filename)
+    except ValueError as e:
+        return JSONResponse({"error": str(e)}, status_code=400)
     if result is None:
         return JSONResponse({"error": "session not found"}, status_code=404)
 
@@ -252,6 +256,12 @@ async def prune_sessions(request: Request):
 def create_app(cfg: EndoscopeConfig) -> Starlette:
     svc = make_session_service(cfg)
 
+    async def _storage_error_handler(
+        request: Request, exc: StorageError
+    ) -> JSONResponse:
+        log.error("storage.error", error=str(exc))
+        return JSONResponse({"error": "internal server error"}, status_code=500)
+
     app = Starlette(
         debug=cfg.debug,
         routes=[
@@ -291,6 +301,7 @@ def create_app(cfg: EndoscopeConfig) -> Starlette:
             ),
         ],
         middleware=[Middleware(AuthMiddleware)],
+        exception_handlers={StorageError: _storage_error_handler},
     )
     app.state.cfg = cfg
     app.state.svc = svc

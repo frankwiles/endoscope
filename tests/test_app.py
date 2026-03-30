@@ -195,7 +195,7 @@ class TestAddEvent:
             "/v1/sessions/00000000-0000-0000-0000-000000000000/events",
             json={"type": "test"},
         )
-        assert resp.status_code == 404
+        assert resp.status_code == 500
 
 
 # ---------------------------------------------------------------------------
@@ -256,7 +256,7 @@ class TestAddFile:
             "/v1/sessions/00000000-0000-0000-0000-000000000000/files",
             data={"filename": "x.txt"},
         )
-        assert resp.status_code == 404
+        assert resp.status_code == 500
 
 
 # ---------------------------------------------------------------------------
@@ -309,7 +309,7 @@ class TestGetMetadata:
         )
         client = TestClient(create_app(cfg))
         resp = client.get("/v1/sessions/00000000-0000-0000-0000-000000000000/metadata")
-        assert resp.status_code == 404
+        assert resp.status_code == 500
 
 
 # ---------------------------------------------------------------------------

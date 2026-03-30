@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import re
+import secrets
 from datetime import UTC, datetime, timedelta
 from uuid import UUID, uuid4
 
@@ -37,10 +38,11 @@ class Session(BaseModel):
 
     @property
     def storage_prefix(self) -> str:
-        """S3 key prefix:  <project>/yyyy/mm/dd/<iso-ts>--<session_id>/"""
+        """S3 key prefix:  <project>/yyyy/mm/dd/<compact-ts>--<session_id>/"""
         ts = self.timestamp
         date_part = ts.strftime("%Y/%m/%d")
-        return f"{self.project}/{date_part}/{ts.isoformat()}--{self.session_id}"
+        ts_compact = ts.strftime("%Y%m%dT%H%M%SZ")
+        return f"{self.project}/{date_part}/{ts_compact}--{self.session_id}"
 
     @property
     def metadata_key(self) -> str:
@@ -79,6 +81,18 @@ _KEY_PATTERN = re.compile(
 )
 
 
+def _parse_timestamp(ts_str: str) -> datetime:
+    """Parse timestamp from a session key — handles both compact and ISO formats.
+
+    Compact: 20260329T123456Z
+    ISO:     2026-03-29T12:34:56+00:00
+    """
+    try:
+        return datetime.strptime(ts_str, "%Y%m%dT%H%M%SZ").replace(tzinfo=UTC)
+    except ValueError:
+        return datetime.fromisoformat(ts_str)
+
+
 def parse_session_key(key: str) -> dict | None:
     """Extract structured data from a metadata.json S3 key path.
 
@@ -91,7 +105,7 @@ def parse_session_key(key: str) -> dict | None:
     try:
         return {
             "session_id": UUID(m.group("uuid")),
-            "timestamp": datetime.fromisoformat(m.group("ts")),
+            "timestamp": _parse_timestamp(m.group("ts")),
             "project": m.group("project"),
         }
     except (ValueError, TypeError):
@@ -115,6 +129,21 @@ def parse_duration(s: str) -> timedelta:
     else:
         return timedelta(minutes=amount)
 
+
+def _dedup_filename(filename: str, existing: list[str]) -> str:
+    """Return *filename* modified with a random suffix if it already appears in *existing*.
+
+    Handles files with extensions: report.csv -> report-a1b2.csv.
+    Handles files without extensions: README -> README-a1b2.
+    """
+    if filename not in existing:
+        return filename
+    base, sep, ext = filename.rpartition(".")
+    while True:
+        tag = secrets.token_hex(2)  # 4 hex characters
+        candidate = f"{base}-{tag}.{ext}" if sep else f"{filename}-{tag}"
+        if candidate not in existing:
+            return candidate
 
 # ---------------------------------------------------------------------------
 # Application service (DDD)
@@ -198,10 +227,14 @@ class SessionService:
         """Register a file with a session and return (session, presigned_url).
 
         Returns None if session not found.
+        Raises ValueError if filename is empty.
         """
+        if not filename or not filename.strip():
+            raise ValueError("filename must not be empty")
         session = await self.get_session(session_id, project)
         if session is None:
             return None
+        filename = _dedup_filename(filename, session.files)
         s3_key = f"{session.files_prefix}{filename}"
         url = await self._storage.generate_presigned_url(s3_key)
         session.files.append(filename)
