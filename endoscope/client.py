@@ -111,9 +111,11 @@ class EndoscopeAPIClient:
 
     def download_file(self, session_id: str, filename: str) -> bytes:
         """Download raw bytes for a file attached to a session."""
+        # Sanitize filename to prevent path traversal
+        safe_filename = Path(filename).name
         resp = self._request(
             "GET",
-            f"/v1/sessions/{session_id}/files/{filename}",
+            f"/v1/sessions/{session_id}/files/{safe_filename}",
         )
         return resp.content
 

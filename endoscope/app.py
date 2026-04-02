@@ -6,6 +6,7 @@ All routes delegate to SessionService for business logic.
 from __future__ import annotations
 
 import hmac
+from pathlib import PurePath
 from uuid import UUID
 
 import structlog
@@ -204,7 +205,8 @@ async def download_file(request: Request):
     if session_id is None:
         return JSONResponse({"error": "invalid session id"}, status_code=400)
 
-    filename = request.path_params["filename"]
+    # Sanitize filename to prevent path traversal attacks
+    filename = PurePath(request.path_params["filename"]).name
     data = await svc.get_file_bytes(session_id, filename=filename)
     if data is None:
         return JSONResponse({"error": "file not found"}, status_code=404)
