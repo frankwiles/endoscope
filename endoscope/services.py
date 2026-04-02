@@ -7,7 +7,7 @@ from uuid import UUID, uuid4
 
 import structlog
 from endoscope.storage import S3Storage
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, field_validator
 
 from .config import EndoscopeConfig
 
@@ -24,6 +24,17 @@ class SessionCreateRequest(BaseModel):
 
     project: str
     metadata: dict | None = None
+
+    @field_validator("project")
+    @classmethod
+    def validate_project(cls, v: str) -> str:
+        if not v or not v.strip():
+            raise ValueError("project must not be empty")
+        if len(v) > 64:
+            raise ValueError("project must be <= 64 characters")
+        if not re.match(r"^[a-z0-9-]+$", v):
+            raise ValueError("project must contain only lowercase letters, numbers, and hyphens")
+        return v
 
 
 class Session(BaseModel):

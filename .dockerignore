@@ -1,4 +1,5 @@
 .venv
+venv/
 .envrc
 .local_env
 storage/
