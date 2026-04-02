@@ -17,6 +17,7 @@ import secrets
 from pathlib import Path
 from typing import Optional
 
+import os
 import httpx
 import typer
 import uvicorn
@@ -119,13 +120,6 @@ def _require_client(state: State) -> EndoscopeAPIClient:
 
 @app.command("serve")
 def serve_cmd(
-    api_key: str = typer.Option(
-        None,
-        "--api-key",
-        "-k",
-        envvar="ENDO_API_KEY",
-        help="API key for authentication",
-    ),
     project: str = typer.Option(
         None, "--project", "-p", envvar="ENDO_PROJECT", help="Project name"
     ),
@@ -167,10 +161,18 @@ def serve_cmd(
     ),
 ):
     """Start the endoscope collector API service."""
+
+    api_key = os.environ.get("ENDO_API_KEY")
+    if not api_key:
+        err_console.print(
+            "Required environment variable not set: ENDO_API_KEY\n"
+            "API key must be provided via ENDO_API_KEY environment variable for security."
+        )
+        raise typer.Exit(code=1)
+
     missing = [
         name
         for name, val in [
-            ("--api-key", api_key),
             ("--project", project),
             ("--s3-access-key", s3_access_key),
             ("--s3-secret-key", s3_secret_key),
