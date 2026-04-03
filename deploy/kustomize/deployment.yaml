@@ -1,0 +1,48 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: endoscope
+  labels:
+    app: endoscope
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: endoscope
+  template:
+    metadata:
+      labels:
+        app: endoscope
+    spec:
+      containers:
+        - name: endoscope
+          image: endoscope:latest
+          command:
+            - endoscope
+            - serve
+          ports:
+            - name: http
+              containerPort: 8000
+              protocol: TCP
+          envFrom:
+            - configMapRef:
+                name: endoscope-config
+          livenessProbe:
+            httpGet:
+              path: /healthz
+              port: http
+            initialDelaySeconds: 10
+            periodSeconds: 10
+          readinessProbe:
+            httpGet:
+              path: /readyz
+              port: http
+            initialDelaySeconds: 5
+            periodSeconds: 5
+          resources:
+            requests:
+              memory: "128Mi"
+              cpu: "100m"
+            limits:
+              memory: "512Mi"
+              cpu: "500m"

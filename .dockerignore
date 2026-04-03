@@ -5,3 +5,5 @@ venv/
 storage/
 __pycache__
 .git
+*.md
+*.pyc

@@ -1,0 +1,23 @@
+apiVersion: kustomize.config.k8s.io/v1beta1
+kind: Kustomization
+
+# Generate ConfigMap from literal values
+configMapGenerator:
+  - name: endoscope-config
+    literals:
+      - ENDO_API_KEY=changeme-api-key
+      - ENDO_PROJECT=endoscope
+      - ENDO_S3_ENDPOINT=http://rustfs:9000
+      - ENDO_S3_ACCESS_KEY=rustfsadmin
+      - ENDO_S3_SECRET_KEY=rustfsadmin
+      - ENDO_S3_BUCKET=endoscope
+      - ENDO_S3_REGION=us-east-1
+      - ENDO_HOST=0.0.0.0
+      - ENDO_PORT=8000
+      - ENDO_DEBUG=false
+      - ENDO_PRETTY_JSON_LOGS=false
+
+resources:
+  - deployment.yaml
+  - service.yaml
+  - ingress.yaml

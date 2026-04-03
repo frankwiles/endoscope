@@ -55,3 +55,14 @@ run_python_file file:
 # Run pytest inside the api container (mounts project source)
 @test *ARGS:
     docker compose run --rm -v $(pwd)/tests:/app/tests -v $(pwd)/endoscope:/app/endoscope api python -m pytest {{ ARGS }}
+
+# ----------------------------------------------------------------
+# Docker publish commands
+# ----------------------------------------------------------------
+
+# Build and publish the Docker image to Docker Hub with version and latest tags
+@publish:
+    VERSION=`grep '^version = ' pyproject.toml | cut -d'"' -f2` && \
+    docker build -t frankwiles/endoscope:$VERSION -t frankwiles/endoscope:latest . && \
+    docker push frankwiles/endoscope:$VERSION && \
+    docker push frankwiles/endoscope:latest
