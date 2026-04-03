@@ -16,7 +16,7 @@ spec:
     spec:
       containers:
         - name: endoscope
-          image: endoscope:latest
+          image: frankwiles/endoscope:latest
           command:
             - endoscope
             - serve
