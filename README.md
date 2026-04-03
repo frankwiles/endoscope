@@ -120,8 +120,8 @@ docker compose up -d
 
 ### Environment Variables
 
-| Variable              | Description                          | Example                        |
-|--------------------|--------------------------------------|--------------------------------|
+| Variable            | Description                          | Example                        |
+|---------------------|--------------------------------------|--------------------------------|
 | `ENDO_API_KEY`        | API key for authentication           | `my-secret-key`                |
 | `ENDO_PROJECT`        | Project name                         | `my-app`                       |
 | `ENDO_API_URL`        | API base URL (CLI only)              | `http://localhost:8000`        |
@@ -130,7 +130,7 @@ docker compose up -d
 | `ENDO_S3_SECRET_KEY`  | S3 secret key                        | `rustfsadmin`                  |
 | `ENDO_S3_BUCKET`      | S3 bucket name                       | `endoscope`                    |
 | `ENDO_S3_REGION`      | S3 region                            | `us-east-1`                    |
-| `ENDO_HOST`           | Host to bind (serve command)         | `0.0.0.0`                      |
+| `ENDO_HOST`         | Host to bind (serve command)         | `0.0.0.0`                    |
 | `ENDO_PORT`           | Port to bind (serve command)         | `8000`                         |
 | `ENDO_DEBUG`          | Enable debug mode                    | `true`                         |
 | `ENDO_PRETTY_JSON_LOGS` | Pretty-print JSON logs             | `true`                         |
@@ -236,7 +236,7 @@ export ENDO_API_KEY=your-api-key
 export ENDO_PROJECT=your-project
 
 # Or use flags
-endoscope --api-key=xxx --project=foo list
+endoscope --project=foo list
 ```
 
 ### Commands
