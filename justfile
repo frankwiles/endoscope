@@ -62,7 +62,6 @@ run_python_file file:
 
 # Build and publish the Docker image to Docker Hub with version and latest tags
 @publish:
+    docker buildx use builder
     VERSION=`grep '^version = ' pyproject.toml | cut -d'"' -f2` && \
-    docker build -t frankwiles/endoscope:$VERSION -t frankwiles/endoscope:latest . && \
-    docker push frankwiles/endoscope:$VERSION && \
-    docker push frankwiles/endoscope:latest
+    docker buildx build --platform linux/amd64,linux/arm64 -t frankwiles/endoscope:$VERSION -t frankwiles/endoscope:latest --push .

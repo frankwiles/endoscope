@@ -21,7 +21,9 @@ This is **not** an observability platform. It is designed for:
 
 1. **Deploy endoscope server somewhere**
 
-  FIXME
+  You can use the kustomization in `deploy/kustomize/` as an example.
+
+  The [endoscope docker image](https://hub.docker.com/repository/docker/frankwiles/endoscope)
 
 2. **Set your environment variables:**
 
