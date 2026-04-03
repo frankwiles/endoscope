@@ -87,7 +87,7 @@ A **project** is a namespace for sessions. Each endoscope deployment is intended
 | Component     | Technology     | Description                              |
 |------------|----------------|------------------------------------------|
 | API Service   | Starlette      | Stateless REST API for session ingestion |
-| Python SDK    | httpx/asyncio  | Async client for instrumenting apps      |
+| Python SDK    | httpx          | Synchronous client for instrumenting apps|
 | CLI           | Typer + Rich   | Manage and retrieve sessions             |
 | Storage       | S3-compatible  | RustFS (local) or AWS S3 (production)    |
 
@@ -184,23 +184,19 @@ pip install endoscope
 ### Basic Usage
 
 ```python
-import asyncio
 from endoscope import EndoscopeClient
 
-async def main():
-    async with EndoscopeClient.from_env() as client:
-        # Start a session
-        session = await client.start_session(project="my-app")
+with EndoscopeClient.from_env() as client:
+    # Start a session
+    session = client.start_session(project="my-app")
 
-        # Add events
-        await session.event("step", {"x": 1, "y": 2})
-        await session.event("error", {"message": "Something went wrong"})
+    # Add events
+    session.event("step", {"x": 1, "y": 2})
+    session.event("error", {"message": "Something went wrong"})
 
-        # Add files
-        await session.file("output.txt", b"hello world")
-        await session.file("screenshot.png", open("img.png", "rb").read())
-
-asyncio.run(main())
+    # Add files
+    session.file("output.txt", b"hello world")
+    session.file("screenshot.png", open("img.png", "rb").read())
 ```
 
 ### SDK Methods
@@ -210,6 +206,23 @@ asyncio.run(main())
 | `start_session(project)`  | Create a new session           |
 | `session.event(name, data)` | Add a structured event       |
 | `session.file(name, data)`  | Upload a binary file         |
+
+### Example
+
+```python
+from endoscope import EndoscopeClient
+
+# Create client from environment
+client = EndoscopeClient.from_env()
+
+# Start a session and record debug data
+session = client.start_session(project="my-app")
+session.event("step", {"x": 1, "y": 2})
+session.file("output.txt", b"hello world")
+
+# Clean up
+client.close()
+```
 
 
 
@@ -340,6 +353,12 @@ just shell       # Shell in API container
 just test        # Run tests
 ```
 
+
+## Roadmap
+
+- [x] API Service
+- [x] Python SDK (in this repo)
+- [ ] Javascript SDK
 
 ## License and Author
 
